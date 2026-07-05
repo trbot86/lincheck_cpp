@@ -275,13 +275,19 @@ Lincheck++ supports STM-backed objects through explicit STM hooks. The hooks do 
 
 The STM extension gives the model checker visibility inside a transaction implementation. A backend can call:
 
+- `lincheck::stm::tx_location_init(address, value)`
+- `lincheck::stm::tx_location_register(address, label, type_name)`
+- `lincheck::stm::tx_location_destroy(address)`
 - `lincheck::stm::tx_begin(read_only, start_clock_or_version)`
 - `lincheck::stm::tx_read(address, lock_slot, version)`
 - `lincheck::stm::tx_write(address, lock_slot)`
+- `lincheck::stm::tx_read_value(address, value, lock_slot, version)`
+- `lincheck::stm::tx_write_value(address, value, lock_slot)`
 - `lincheck::stm::tx_validate_begin()` and `lincheck::stm::tx_validate_end(success)`
 - `lincheck::stm::tx_lock_attempt(lock_slot)`, `lincheck::stm::tx_lock_acquired(lock_slot)`, `lincheck::stm::tx_lock_failed(lock_slot)`, and `lincheck::stm::tx_lock_released(lock_slot)`
 - `lincheck::stm::tx_commit_attempt()` and `lincheck::stm::tx_commit_success(commit_clock)`
 - `lincheck::stm::tx_abort(reason)` and `lincheck::stm::tx_retry(reason, attempt)`
+- `lincheck::stm::tx_attempt_metadata(logical_transaction_id, attempt)`
 
 When a Lincheck runtime is active, each hook records a structured `CheckResult::stm_events` entry, emits a trace event with transaction ID/depth metadata, and creates a cooperative scheduler switch point for model checking. Hooks are cheap outside Lincheck runs, but they are explicit instrumentation; there is no compiler pass that inserts them automatically.
 

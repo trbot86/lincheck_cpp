@@ -2256,6 +2256,12 @@ struct StmEventRecord {
     std::string reason;
     std::uint64_t transaction_id = 0;
     int transaction_depth = 0;
+    std::uint64_t logical_transaction_id = 0;
+    std::string label;
+    std::string type_name;
+    Value value;
+    bool has_value = false;
+    bool value_supported = true;
 };
 
 inline std::string to_string(const StmEventRecord& record) {
@@ -4158,6 +4164,9 @@ private:
 namespace stm {
 
 enum class EventKind {
+    tx_location_init,
+    tx_location_register,
+    tx_location_destroy,
     tx_begin,
     tx_read,
     tx_write,
@@ -4170,7 +4179,8 @@ enum class EventKind {
     tx_commit_attempt,
     tx_commit_success,
     tx_abort,
-    tx_retry
+    tx_retry,
+    tx_attempt_metadata
 };
 
 struct Event {
@@ -4188,10 +4198,19 @@ struct Event {
     std::string reason;
     std::uint64_t transaction_id = 0;
     int transaction_depth = 0;
+    std::uint64_t logical_transaction_id = 0;
+    std::string label;
+    std::string type_name;
+    Value value;
+    bool has_value = false;
+    bool value_supported = true;
 };
 
 inline const char* event_name(EventKind kind) {
     switch (kind) {
+        case EventKind::tx_location_init: return "tx_location_init";
+        case EventKind::tx_location_register: return "tx_location_register";
+        case EventKind::tx_location_destroy: return "tx_location_destroy";
         case EventKind::tx_begin: return "tx_begin";
         case EventKind::tx_read: return "tx_read";
         case EventKind::tx_write: return "tx_write";
@@ -4205,12 +4224,16 @@ inline const char* event_name(EventKind kind) {
         case EventKind::tx_commit_success: return "tx_commit_success";
         case EventKind::tx_abort: return "tx_abort";
         case EventKind::tx_retry: return "tx_retry";
+        case EventKind::tx_attempt_metadata: return "tx_attempt_metadata";
     }
     return "tx_unknown";
 }
 
 inline const char* switch_location(EventKind kind) {
     switch (kind) {
+        case EventKind::tx_location_init: return "stm.tx_location_init";
+        case EventKind::tx_location_register: return "stm.tx_location_register";
+        case EventKind::tx_location_destroy: return "stm.tx_location_destroy";
         case EventKind::tx_begin: return "stm.tx_begin";
         case EventKind::tx_read: return "stm.tx_read";
         case EventKind::tx_write: return "stm.tx_write";
@@ -4224,6 +4247,7 @@ inline const char* switch_location(EventKind kind) {
         case EventKind::tx_commit_success: return "stm.tx_commit_success";
         case EventKind::tx_abort: return "stm.tx_abort";
         case EventKind::tx_retry: return "stm.tx_retry";
+        case EventKind::tx_attempt_metadata: return "stm.tx_attempt_metadata";
     }
     return "stm.tx_unknown";
 }
@@ -4261,13 +4285,35 @@ inline std::string to_string(const Event& event) {
     if (event.transaction_depth != 0) {
         out << " tx_depth=" << event.transaction_depth;
     }
+    if (event.logical_transaction_id != 0) {
+        out << " logical_tx_id=" << event.logical_transaction_id;
+    }
+    if (!event.label.empty()) {
+        out << " label=" << event.label;
+    }
+    if (!event.type_name.empty()) {
+        out << " type=" << event.type_name;
+    }
+    if (event.has_value) {
+        out << " value=" << event.value.to_string();
+    } else if (!event.value_supported) {
+        out << " value=<unsupported>";
+    }
     return out.str();
 }
 
 void emit(const Event& event);
+template <typename T>
+void tx_location_init(const void* address, const T& value);
+void tx_location_register(const void* address, std::string label = {}, std::string type_name = {});
+void tx_location_destroy(const void* address);
 void tx_begin(bool read_only, std::uint64_t start_clock_or_version = 0);
 void tx_read(const void* address, std::uint64_t lock_slot = 0, std::uint64_t version = 0);
 void tx_write(const void* address, std::uint64_t lock_slot = 0);
+template <typename T>
+void tx_read_value(const void* address, const T& value, std::uint64_t lock_slot = 0, std::uint64_t version = 0);
+template <typename T>
+void tx_write_value(const void* address, const T& value, std::uint64_t lock_slot = 0);
 void tx_validate_begin();
 void tx_validate_end(bool success);
 void tx_lock_attempt(std::uint64_t lock_slot);
@@ -4278,6 +4324,7 @@ void tx_commit_attempt();
 void tx_commit_success(std::uint64_t commit_clock = 0);
 void tx_abort(std::string reason = {});
 void tx_retry(std::string reason = {}, int attempt = 0);
+void tx_attempt_metadata(std::uint64_t logical_transaction_id, int attempt);
 
 } // namespace stm
 
@@ -4320,6 +4367,12 @@ inline StmEventRecord make_stm_event_record(
     record.reason = event.reason;
     record.transaction_id = event.transaction_id;
     record.transaction_depth = event.transaction_depth;
+    record.logical_transaction_id = event.logical_transaction_id;
+    record.label = event.label;
+    record.type_name = event.type_name;
+    record.value = event.value;
+    record.has_value = event.has_value;
+    record.value_supported = event.value_supported;
     return record;
 }
 
@@ -4792,22 +4845,40 @@ struct TransactionContext {
     std::uint64_t next_id = 1;
     std::uint64_t current_id = 0;
     std::uint64_t last_aborted_id = 0;
+    std::uint64_t logical_transaction_id = 0;
+    std::uint64_t last_aborted_logical_transaction_id = 0;
     int depth = 0;
     int last_aborted_depth = 0;
+    int attempt = 0;
+    int last_aborted_attempt = 0;
 };
 
 inline thread_local TransactionContext transaction_context;
 
 inline void attach_current_transaction(Event& event) {
-    if (transaction_context.current_id == 0) return;
-    event.transaction_id = transaction_context.current_id;
-    event.transaction_depth = transaction_context.depth;
+    if (transaction_context.current_id != 0) {
+        event.transaction_id = transaction_context.current_id;
+        event.transaction_depth = transaction_context.depth;
+    }
+    if (transaction_context.logical_transaction_id != 0) {
+        event.logical_transaction_id = transaction_context.logical_transaction_id;
+    }
+    if (event.attempt == 0 && transaction_context.attempt != 0) {
+        event.attempt = transaction_context.attempt;
+    }
 }
 
 inline void attach_last_aborted_transaction(Event& event) {
-    if (transaction_context.last_aborted_id == 0) return;
-    event.transaction_id = transaction_context.last_aborted_id;
-    event.transaction_depth = transaction_context.last_aborted_depth;
+    if (transaction_context.last_aborted_id != 0) {
+        event.transaction_id = transaction_context.last_aborted_id;
+        event.transaction_depth = transaction_context.last_aborted_depth;
+    }
+    if (transaction_context.last_aborted_logical_transaction_id != 0) {
+        event.logical_transaction_id = transaction_context.last_aborted_logical_transaction_id;
+    }
+    if (event.attempt == 0 && transaction_context.last_aborted_attempt != 0) {
+        event.attempt = transaction_context.last_aborted_attempt;
+    }
 }
 
 inline void emit(const Event& event) {
@@ -4816,9 +4887,59 @@ inline void emit(const Event& event) {
     }
 }
 
+template <typename T>
+inline void attach_value(Event& event, const T& value) {
+    using D = std::decay_t<T>;
+    if (event.type_name.empty()) {
+        event.type_name = typeid(D).name();
+    }
+    if constexpr (std::is_constructible_v<Value, const T&>) {
+        event.value = Value(value);
+        event.has_value = true;
+        event.value_supported = true;
+    } else {
+        event.value_supported = false;
+        emit_warning(
+            "STM value hook observed an unsupported value type " +
+            event.type_name +
+            "; opacity checking cannot use this event value"
+        );
+    }
+}
+
+template <typename T>
+inline void tx_location_init(const void* address, const T& value) {
+    Event event;
+    event.kind = EventKind::tx_location_init;
+    event.address = address;
+    attach_value(event, value);
+    attach_current_transaction(event);
+    emit(event);
+}
+
+inline void tx_location_register(const void* address, std::string label, std::string type_name) {
+    Event event;
+    event.kind = EventKind::tx_location_register;
+    event.address = address;
+    event.label = std::move(label);
+    event.type_name = std::move(type_name);
+    attach_current_transaction(event);
+    emit(event);
+}
+
+inline void tx_location_destroy(const void* address) {
+    Event event;
+    event.kind = EventKind::tx_location_destroy;
+    event.address = address;
+    attach_current_transaction(event);
+    emit(event);
+}
+
 inline void tx_begin(bool read_only, std::uint64_t start_clock_or_version) {
     transaction_context.last_aborted_id = 0;
     transaction_context.last_aborted_depth = 0;
+    transaction_context.last_aborted_logical_transaction_id = 0;
+    transaction_context.last_aborted_attempt = 0;
     if (transaction_context.current_id == 0) {
         transaction_context.current_id = transaction_context.next_id++;
         transaction_context.depth = 1;
@@ -4835,6 +4956,18 @@ inline void tx_begin(bool read_only, std::uint64_t start_clock_or_version) {
     emit(event);
 }
 
+inline void tx_attempt_metadata(std::uint64_t logical_transaction_id, int attempt) {
+    transaction_context.logical_transaction_id = logical_transaction_id;
+    transaction_context.attempt = attempt;
+
+    Event event;
+    event.kind = EventKind::tx_attempt_metadata;
+    event.logical_transaction_id = logical_transaction_id;
+    event.attempt = attempt;
+    attach_current_transaction(event);
+    emit(event);
+}
+
 inline void tx_read(const void* address, std::uint64_t lock_slot, std::uint64_t version) {
     Event event;
     event.kind = EventKind::tx_read;
@@ -4847,12 +4980,38 @@ inline void tx_read(const void* address, std::uint64_t lock_slot, std::uint64_t 
     emit(event);
 }
 
+template <typename T>
+inline void tx_read_value(const void* address, const T& value, std::uint64_t lock_slot, std::uint64_t version) {
+    Event event;
+    event.kind = EventKind::tx_read;
+    event.address = address;
+    event.lock_slot = lock_slot;
+    event.has_lock_slot = true;
+    event.version = version;
+    event.has_version = true;
+    attach_value(event, value);
+    attach_current_transaction(event);
+    emit(event);
+}
+
 inline void tx_write(const void* address, std::uint64_t lock_slot) {
     Event event;
     event.kind = EventKind::tx_write;
     event.address = address;
     event.lock_slot = lock_slot;
     event.has_lock_slot = true;
+    attach_current_transaction(event);
+    emit(event);
+}
+
+template <typename T>
+inline void tx_write_value(const void* address, const T& value, std::uint64_t lock_slot) {
+    Event event;
+    event.kind = EventKind::tx_write;
+    event.address = address;
+    event.lock_slot = lock_slot;
+    event.has_lock_slot = true;
+    attach_value(event, value);
     attach_current_transaction(event);
     emit(event);
 }
@@ -4927,6 +5086,8 @@ inline void tx_commit_success(std::uint64_t commit_clock) {
     } else {
         transaction_context.current_id = 0;
         transaction_context.depth = 0;
+        transaction_context.logical_transaction_id = 0;
+        transaction_context.attempt = 0;
     }
 }
 
@@ -4938,8 +5099,12 @@ inline void tx_abort(std::string reason) {
     emit(event);
     transaction_context.last_aborted_id = transaction_context.current_id;
     transaction_context.last_aborted_depth = transaction_context.depth;
+    transaction_context.last_aborted_logical_transaction_id = transaction_context.logical_transaction_id;
+    transaction_context.last_aborted_attempt = transaction_context.attempt;
     transaction_context.current_id = 0;
     transaction_context.depth = 0;
+    transaction_context.logical_transaction_id = 0;
+    transaction_context.attempt = 0;
 }
 
 inline void tx_retry(std::string reason, int attempt) {
@@ -4954,6 +5119,8 @@ inline void tx_retry(std::string reason, int attempt) {
     emit(event);
     transaction_context.last_aborted_id = 0;
     transaction_context.last_aborted_depth = 0;
+    transaction_context.last_aborted_logical_transaction_id = 0;
+    transaction_context.last_aborted_attempt = 0;
 }
 
 } // namespace stm

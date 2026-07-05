@@ -5,11 +5,26 @@
 #define MULTIVERSE_LINCHECK_TX_BEGIN(read_only, start_clock_or_version) \
     ::lincheck::stm::tx_begin((read_only), (start_clock_or_version))
 
+#define MULTIVERSE_LINCHECK_TX_LOCATION_INIT(address, value) \
+    ::lincheck::stm::tx_location_init((address), (value))
+
+#define MULTIVERSE_LINCHECK_TX_LOCATION_REGISTER(address, label, type_name) \
+    ::lincheck::stm::tx_location_register((address), (label), (type_name))
+
+#define MULTIVERSE_LINCHECK_TX_LOCATION_DESTROY(address) \
+    ::lincheck::stm::tx_location_destroy((address))
+
 #define MULTIVERSE_LINCHECK_TX_READ(address, lock_slot, version) \
     ::lincheck::stm::tx_read((address), (lock_slot), (version))
 
 #define MULTIVERSE_LINCHECK_TX_WRITE(address, lock_slot) \
     ::lincheck::stm::tx_write((address), (lock_slot))
+
+#define MULTIVERSE_LINCHECK_TX_READ_VALUE(address, value, lock_slot, version) \
+    ::lincheck::stm::tx_read_value((address), (value), (lock_slot), (version))
+
+#define MULTIVERSE_LINCHECK_TX_WRITE_VALUE(address, value, lock_slot) \
+    ::lincheck::stm::tx_write_value((address), (value), (lock_slot))
 
 #define MULTIVERSE_LINCHECK_TX_VALIDATE_BEGIN() \
     ::lincheck::stm::tx_validate_begin()
@@ -40,3 +55,6 @@
 
 #define MULTIVERSE_LINCHECK_TX_RETRY(reason, attempt) \
     ::lincheck::stm::tx_retry((reason), (attempt))
+
+#define MULTIVERSE_LINCHECK_TX_ATTEMPT_METADATA(logical_transaction_id, attempt) \
+    ::lincheck::stm::tx_attempt_metadata((logical_transaction_id), (attempt))

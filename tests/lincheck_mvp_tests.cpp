@@ -5959,9 +5959,14 @@ void stm_hooks_emit_trace_events_and_switch_points() {
     int value = 0;
     {
         lincheck::ScopedRuntime scoped(&runtime);
+        lincheck::stm::tx_location_register(&value, "value", "int");
+        lincheck::stm::tx_location_init(&value, value);
         lincheck::stm::tx_begin(false, 10);
+        lincheck::stm::tx_attempt_metadata(1001, 1);
         lincheck::stm::tx_read(&value, 7, 10);
+        lincheck::stm::tx_read_value(&value, 0, 7, 10);
         lincheck::stm::tx_write(&value, 7);
+        lincheck::stm::tx_write_value(&value, 1, 7);
         lincheck::stm::tx_validate_begin();
         lincheck::stm::tx_validate_end(true);
         lincheck::stm::tx_lock_attempt(7);
@@ -5981,6 +5986,7 @@ void stm_hooks_emit_trace_events_and_switch_points() {
         lincheck::stm::tx_lock_failed(0);
         lincheck::stm::tx_lock_released(0);
         lincheck::stm::tx_commit_success(0);
+        lincheck::stm::tx_location_destroy(&value);
     }
 
     auto has_event = [&](const std::string& needle) {
@@ -6007,6 +6013,10 @@ void stm_hooks_emit_trace_events_and_switch_points() {
     });
 
     require(has_event("stm.tx_begin"), "STM tx_begin hook should emit a trace event");
+    require(has_event("stm.tx_location_register"), "STM location register hook should emit a trace event");
+    require(has_event("stm.tx_location_init"), "STM location init hook should emit a trace event");
+    require(has_event("stm.tx_location_destroy"), "STM location destroy hook should emit a trace event");
+    require(has_event("stm.tx_attempt_metadata"), "STM attempt metadata hook should emit a trace event");
     require(has_event("stm.tx_read"), "STM tx_read hook should emit a trace event");
     require(has_event("stm.tx_write"), "STM tx_write hook should emit a trace event");
     require(has_event("stm.tx_validate_begin"), "STM tx_validate_begin hook should emit a trace event");
@@ -6020,9 +6030,16 @@ void stm_hooks_emit_trace_events_and_switch_points() {
     require(has_event("stm.tx_abort reason=conflict"), "STM tx_abort hook should emit a trace event");
     require(has_event("stm.tx_retry attempt=2 reason=abort"), "STM tx_retry hook should emit a trace event");
     require(has_event_parts("stm.tx_begin", "clock=0"), "STM begin hook should preserve a zero start clock");
+    require(has_event_parts("stm.tx_location_init", "value=0"), "STM location init hook should preserve the initial value");
+    require(has_event_parts("stm.tx_location_register", "label=value"), "STM location register hook should preserve labels");
+    require(has_event_parts("stm.tx_location_register", "type=int"), "STM location register hook should preserve type names");
+    require(has_event_parts("stm.tx_attempt_metadata", "logical_tx_id=1001"), "STM attempt metadata should preserve logical transaction IDs");
+    require(has_event_parts("stm.tx_attempt_metadata", "attempt=1"), "STM attempt metadata should preserve attempts");
     require(has_event_parts("stm.tx_read", "lock_slot=0"), "STM read hook should preserve a zero lock slot");
     require(has_event_parts("stm.tx_read", "version=0"), "STM read hook should preserve a zero version");
+    require(has_event_parts("stm.tx_read", "value=0"), "STM read value hook should preserve observed values");
     require(has_event_parts("stm.tx_write", "lock_slot=0"), "STM write hook should preserve a zero lock slot");
+    require(has_event_parts("stm.tx_write", "value=1"), "STM write value hook should preserve written values");
     require(has_event("stm.tx_lock_attempt lock_slot=0"), "STM lock hook should preserve a zero lock slot");
     require(has_event_parts("stm.tx_commit_success", "clock=0"), "STM commit hook should preserve a zero commit clock");
     require(has_event_parts("stm.tx_begin", "tx_id=1"), "STM begin hook should assign a transaction ID");
@@ -6031,6 +6048,8 @@ void stm_hooks_emit_trace_events_and_switch_points() {
     require(has_event_parts("stm.tx_abort", "tx_id=2"), "STM abort hook should preserve the aborted transaction ID");
     require(has_event_parts("stm.tx_retry", "tx_id=2"), "STM retry hook should preserve the aborted transaction ID");
     require(has_event_parts("stm.tx_begin", "tx_depth=1"), "STM begin hook should record transaction depth");
+    require(has_event_parts("stm.tx_read", "logical_tx_id=1001"), "STM read value hook should preserve logical transaction IDs");
+    require(has_event_parts("stm.tx_write", "logical_tx_id=1001"), "STM write value hook should preserve logical transaction IDs");
     require(has_stable_address, "STM read/write hooks should format addresses with stable object IDs");
     require(
         std::any_of(runtime.stm_events.begin(), runtime.stm_events.end(), [](const auto& event) {
@@ -6053,6 +6072,34 @@ void stm_hooks_emit_trace_events_and_switch_points() {
     );
     require(
         std::any_of(runtime.stm_events.begin(), runtime.stm_events.end(), [](const auto& event) {
+            return event.kind == lincheck::stm::EventKind::tx_location_init &&
+                event.has_value &&
+                lincheck::value_cast<int>(event.value) == 0;
+        }),
+        "raw STM location init events should preserve structured values"
+    );
+    require(
+        std::any_of(runtime.stm_events.begin(), runtime.stm_events.end(), [](const auto& event) {
+            return event.kind == lincheck::stm::EventKind::tx_read &&
+                event.has_value &&
+                lincheck::value_cast<int>(event.value) == 0 &&
+                event.logical_transaction_id == 1001 &&
+                event.attempt == 1;
+        }),
+        "raw STM read value events should preserve structured values and attempt metadata"
+    );
+    require(
+        std::any_of(runtime.stm_events.begin(), runtime.stm_events.end(), [](const auto& event) {
+            return event.kind == lincheck::stm::EventKind::tx_write &&
+                event.has_value &&
+                lincheck::value_cast<int>(event.value) == 1 &&
+                event.logical_transaction_id == 1001 &&
+                event.attempt == 1;
+        }),
+        "raw STM write value events should preserve structured values and attempt metadata"
+    );
+    require(
+        std::any_of(runtime.stm_events.begin(), runtime.stm_events.end(), [](const auto& event) {
             return event.kind == lincheck::stm::EventKind::tx_validate_end && event.success;
         }),
         "raw STM validation events should preserve structured success metadata"
@@ -6067,6 +6114,8 @@ void stm_hooks_emit_trace_events_and_switch_points() {
     );
     require(has_switch("stm.tx_abort"), "STM abort hook should emit a scheduler switch point");
     require(has_switch("stm.tx_retry"), "STM retry hook should emit a scheduler switch point");
+    require(has_switch("stm.tx_location_init"), "STM location init hook should emit a scheduler switch point");
+    require(has_switch("stm.tx_attempt_metadata"), "STM attempt metadata hook should emit a scheduler switch point");
     require(has_commit_switch, "STM hooks should emit scheduler switch points");
     require(has_lock_release_switch, "STM lock release hook should emit a scheduler switch point");
 }
@@ -6076,12 +6125,17 @@ void multiverse_hook_macros_bind_to_stm_hooks() {
     int value = 0;
     {
         lincheck::ScopedRuntime scoped(&runtime);
+        MULTIVERSE_LINCHECK_TX_LOCATION_REGISTER(&value, "value", "int");
+        MULTIVERSE_LINCHECK_TX_LOCATION_INIT(&value, value);
         MULTIVERSE_LINCHECK_TX_BEGIN(false, 20);
+        MULTIVERSE_LINCHECK_TX_ATTEMPT_METADATA(2002, 4);
         MULTIVERSE_LINCHECK_TX_READ(&value, 3, 20);
+        MULTIVERSE_LINCHECK_TX_READ_VALUE(&value, value, 3, 20);
         MULTIVERSE_LINCHECK_TX_LOCK_ATTEMPT(3);
         MULTIVERSE_LINCHECK_TX_LOCK_ACQUIRED(3);
         MULTIVERSE_LINCHECK_TX_LOCK_FAILED(3);
         MULTIVERSE_LINCHECK_TX_WRITE(&value, 3);
+        MULTIVERSE_LINCHECK_TX_WRITE_VALUE(&value, 1, 3);
         MULTIVERSE_LINCHECK_TX_VALIDATE_BEGIN();
         MULTIVERSE_LINCHECK_TX_VALIDATE_END(false);
         MULTIVERSE_LINCHECK_TX_LOCK_RELEASED(3);
@@ -6089,8 +6143,36 @@ void multiverse_hook_macros_bind_to_stm_hooks() {
         MULTIVERSE_LINCHECK_TX_COMMIT_SUCCESS(21);
         MULTIVERSE_LINCHECK_TX_ABORT("conflict");
         MULTIVERSE_LINCHECK_TX_RETRY("abort", 4);
+        MULTIVERSE_LINCHECK_TX_LOCATION_DESTROY(&value);
     }
 
+    const auto has_location_init = std::any_of(runtime.events.begin(), runtime.events.end(), [](const std::string& event) {
+        return event.find("stm.tx_location_init") != std::string::npos &&
+            event.find("value=0") != std::string::npos;
+    });
+    const auto has_location_register = std::any_of(runtime.events.begin(), runtime.events.end(), [](const std::string& event) {
+        return event.find("stm.tx_location_register") != std::string::npos &&
+            event.find("label=value") != std::string::npos &&
+            event.find("type=int") != std::string::npos;
+    });
+    const auto has_location_destroy = std::any_of(runtime.events.begin(), runtime.events.end(), [](const std::string& event) {
+        return event.find("stm.tx_location_destroy") != std::string::npos;
+    });
+    const auto has_attempt_metadata = std::any_of(runtime.events.begin(), runtime.events.end(), [](const std::string& event) {
+        return event.find("stm.tx_attempt_metadata") != std::string::npos &&
+            event.find("logical_tx_id=2002") != std::string::npos &&
+            event.find("attempt=4") != std::string::npos;
+    });
+    const auto has_read_value = std::any_of(runtime.events.begin(), runtime.events.end(), [](const std::string& event) {
+        return event.find("stm.tx_read") != std::string::npos &&
+            event.find("value=0") != std::string::npos &&
+            event.find("logical_tx_id=2002") != std::string::npos;
+    });
+    const auto has_write_value = std::any_of(runtime.events.begin(), runtime.events.end(), [](const std::string& event) {
+        return event.find("stm.tx_write") != std::string::npos &&
+            event.find("value=1") != std::string::npos &&
+            event.find("logical_tx_id=2002") != std::string::npos;
+    });
     const auto has_lock_attempt = std::any_of(runtime.events.begin(), runtime.events.end(), [](const std::string& event) {
         return event.find("stm.tx_lock_attempt") != std::string::npos;
     });
@@ -6113,6 +6195,12 @@ void multiverse_hook_macros_bind_to_stm_hooks() {
         return event.find("stm.tx_retry attempt=4 reason=abort") != std::string::npos;
     });
 
+    require(has_location_init, "Multiverse hook macros should bind location initialization to STM hooks");
+    require(has_location_register, "Multiverse hook macros should bind location registration to STM hooks");
+    require(has_location_destroy, "Multiverse hook macros should bind location destruction to STM hooks");
+    require(has_attempt_metadata, "Multiverse hook macros should bind attempt metadata to STM hooks");
+    require(has_read_value, "Multiverse hook macros should bind value reads to STM hooks");
+    require(has_write_value, "Multiverse hook macros should bind value writes to STM hooks");
     require(has_lock_attempt, "Multiverse hook macros should bind lock attempts to STM hooks");
     require(has_lock_failed, "Multiverse hook macros should bind lock failures to STM hooks");
     require(has_validation_failure, "Multiverse hook macros should bind validation results to STM hooks");

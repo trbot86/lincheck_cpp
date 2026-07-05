@@ -8,6 +8,8 @@ The editable Multiverse/MVCC TM checkout is in `upstream/mvcc_tm`.
 
 For practical usage instructions, including the manual instrumentation and Multiverse setup steps that are not automated, see `USING_CPP_LINCHECK.md`.
 
+The planned STM opacity extension is sketched in `OPACITY_PLAN.md`.
+
 ## Build and Test
 
 ```bash
@@ -545,7 +547,7 @@ Under the cooperative scheduler, `park()` blocks the current managed thread unti
 
 ## Transactional Memory and Multiverse
 
-Lincheck++ has a small generic STM hook layer in `lincheck::stm`. An STM backend can call `tx_begin`, `tx_read`, `tx_write`, `tx_validate_begin`, `tx_validate_end`, `tx_lock_attempt`, `tx_lock_acquired`, `tx_lock_failed`, `tx_lock_released`, `tx_commit_attempt`, `tx_commit_success`, `tx_abort`, and `tx_retry` from its transaction machinery. When a Lincheck runtime is active, each hook becomes a structured `CheckResult::stm_events` record, a generic trace event with transaction metadata, and a cooperative model-checker switch point.
+Lincheck++ has a small generic STM hook layer in `lincheck::stm`. An STM backend can call lifecycle hooks such as `tx_begin`, metadata-only access hooks such as `tx_read` and `tx_write`, value-carrying access hooks such as `tx_read_value` and `tx_write_value`, location hooks such as `tx_location_init`, `tx_location_register`, and `tx_location_destroy`, and commit/conflict hooks such as `tx_validate_begin`, `tx_validate_end`, `tx_lock_attempt`, `tx_lock_acquired`, `tx_lock_failed`, `tx_lock_released`, `tx_commit_attempt`, `tx_commit_success`, `tx_abort`, `tx_retry`, and `tx_attempt_metadata` from its transaction machinery. When a Lincheck runtime is active, each hook becomes a structured `CheckResult::stm_events` record, a generic trace event with transaction metadata, and a cooperative model-checker switch point.
 
 The intended use is to check a linearizable ADT implemented over transactional memory. Register the ADT's public operations and a sequential model exactly as with a non-STM object; the verifier still checks only public operation results, exceptions-as-results, real-time ordering, post operations, and optional validation/state callbacks. STM events expose internal transaction interleavings to the scheduler and make failures easier to diagnose, but Lincheck does not linearize individual transaction reads/writes and does not prove opacity, internal STM serializability, live-transaction consistency, or weak-memory behavior.
 
