@@ -1,0 +1,17 @@
+build/
+build-*/
+cmake-build-*/
+
+# Downloaded upstream source trees are kept as standalone checkouts.
+upstream/lincheck-jvm/
+upstream/mvcc_tm/
+
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+
+.DS_Store

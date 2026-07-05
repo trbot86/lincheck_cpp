@@ -1,0 +1,191 @@
+diff --git a/multiverse/multiverse.hpp b/multiverse/multiverse.hpp
+index 62dba0e..4e758a4 100644
+--- a/multiverse/multiverse.hpp
++++ b/multiverse/multiverse.hpp
+@@ -40,6 +40,58 @@
+ #include "tm_common/tm_timelines.h"
+ #include "bloom_filter.h"
+
++#ifndef MULTIVERSE_LINCHECK_TX_BEGIN
++#define MULTIVERSE_LINCHECK_TX_BEGIN(read_only, start_clock_or_version) do { (void)(read_only); (void)(start_clock_or_version); } while (false)
++#endif
++
++#ifndef MULTIVERSE_LINCHECK_TX_READ
++#define MULTIVERSE_LINCHECK_TX_READ(address, lock_slot, version) do { (void)(address); (void)(lock_slot); (void)(version); } while (false)
++#endif
++
++#ifndef MULTIVERSE_LINCHECK_TX_WRITE
++#define MULTIVERSE_LINCHECK_TX_WRITE(address, lock_slot) do { (void)(address); (void)(lock_slot); } while (false)
++#endif
++
++#ifndef MULTIVERSE_LINCHECK_TX_VALIDATE_BEGIN
++#define MULTIVERSE_LINCHECK_TX_VALIDATE_BEGIN() do {} while (false)
++#endif
++
++#ifndef MULTIVERSE_LINCHECK_TX_VALIDATE_END
++#define MULTIVERSE_LINCHECK_TX_VALIDATE_END(success) do { (void)(success); } while (false)
++#endif
++
++#ifndef MULTIVERSE_LINCHECK_TX_LOCK_ATTEMPT
++#define MULTIVERSE_LINCHECK_TX_LOCK_ATTEMPT(lock_slot) do { (void)(lock_slot); } while (false)
++#endif
++
++#ifndef MULTIVERSE_LINCHECK_TX_LOCK_ACQUIRED
++#define MULTIVERSE_LINCHECK_TX_LOCK_ACQUIRED(lock_slot) do { (void)(lock_slot); } while (false)
++#endif
++
++#ifndef MULTIVERSE_LINCHECK_TX_LOCK_FAILED
++#define MULTIVERSE_LINCHECK_TX_LOCK_FAILED(lock_slot) do { (void)(lock_slot); } while (false)
++#endif
++
++#ifndef MULTIVERSE_LINCHECK_TX_LOCK_RELEASED
++#define MULTIVERSE_LINCHECK_TX_LOCK_RELEASED(lock_slot) do { (void)(lock_slot); } while (false)
++#endif
++
++#ifndef MULTIVERSE_LINCHECK_TX_COMMIT_ATTEMPT
++#define MULTIVERSE_LINCHECK_TX_COMMIT_ATTEMPT() do {} while (false)
++#endif
++
++#ifndef MULTIVERSE_LINCHECK_TX_COMMIT_SUCCESS
++#define MULTIVERSE_LINCHECK_TX_COMMIT_SUCCESS(commit_clock) do { (void)(commit_clock); } while (false)
++#endif
++
++#ifndef MULTIVERSE_LINCHECK_TX_ABORT
++#define MULTIVERSE_LINCHECK_TX_ABORT(reason) do { (void)(reason); } while (false)
++#endif
++
++#ifndef MULTIVERSE_LINCHECK_TX_RETRY
++#define MULTIVERSE_LINCHECK_TX_RETRY(reason, attempt) do { (void)(reason); (void)(attempt); } while (false)
++#endif
++
+ std::atomic<int> debugLock {0};
+
+ // #define TRACK_OP_TYPE 1
+@@ -749,11 +801,13 @@ struct AppendLog_StandardWriteSet {
+     inline void unlock(uint64_t nextClock, uint64_t tid) {
+         for (uint64_t i = 0; i < size; i++) {
+             void* addr = entries[i].addr;
+-            std::atomic<uint64_t>* mutex = &globals.gHashLock[hidx((size_t)addr)].mutex;
++            const uint64_t tableIndex = hidx((size_t)addr);
++            std::atomic<uint64_t>* mutex = &globals.gHashLock[tableIndex].mutex;
+             uint64_t sl = mutex->load(std::memory_order_acquire);
+             if (isLocked(sl) && getTid(sl) == tid) {
+                 uint64_t newSL = (tid << TID_SHIFT) | (nextClock);
+                 mutex->store(newSL, std::memory_order_release);
++                MULTIVERSE_LINCHECK_TX_LOCK_RELEASED(tableIndex);
+             }
+         }
+         if (next != nullptr) {
+@@ -1581,6 +1635,11 @@ public:
+                 myd->snapshotStartTs = myd->rClock;
+             }
+         }
++        const bool readOnlyTxn =
++            myd->tx_type == TX_IS_READ ||
++            myd->tx_type == TX_IS_SNAPSHOT ||
++            myd->tx_type == TX_IS_SNAPSHOT_MODE2;
++        MULTIVERSE_LINCHECK_TX_BEGIN(readOnlyTxn, myd->rClock);
+
+         // Clear the logs of the previous transaction
+         myd->writeSet.reset();
+@@ -1596,19 +1655,25 @@ public:
+     inline bool endTx(OpData* myd, const int tid) {
+         std::atomic_signal_fence(std::memory_order_seq_cst);
+         if (myd->writeSet.size == 0) {
++            MULTIVERSE_LINCHECK_TX_COMMIT_ATTEMPT();
+             if (myd->tx_type & TX_IS_SNAPSHOT) {
+                 snapshotRead_onCommit(myd, tid);
+             }
+             gMemManager.unanounceEpoch(myd->tid);
+             gMemManager.commit();
+             myd->attempt = 0;
++            MULTIVERSE_LINCHECK_TX_COMMIT_SUCCESS(myd->rClock);
+             return true;
+         }
+
+-        if (!myd->readSet.validate(myd->rClock, tid)) {
++        MULTIVERSE_LINCHECK_TX_VALIDATE_BEGIN();
++        const bool readSetValid = myd->readSet.validate(myd->rClock, tid);
++        MULTIVERSE_LINCHECK_TX_VALIDATE_END(readSetValid);
++        if (!readSetValid) {
+             abortTx(myd);
+         }
+
++        MULTIVERSE_LINCHECK_TX_COMMIT_ATTEMPT();
+         #ifndef USE_RDTSC
+         uint64_t commitTS = globals.gClock.load();
+         #else
+@@ -1630,6 +1695,7 @@ public:
+         gMemManager.commit();
+
+         myd->attempt = 0;
++        MULTIVERSE_LINCHECK_TX_COMMIT_SUCCESS(commitTS);
+         return true;
+     }
+
+@@ -1659,7 +1725,9 @@ public:
+         myd->tx_type = txType;
+         myd->forceVersioning = false;
+
+-        setjmp(myd->env);
++        if (setjmp(myd->env) != 0) {
++            MULTIVERSE_LINCHECK_TX_RETRY("abort", static_cast<int>(myd->attempt + 1));
++        }
+         myd->attempt++;
+         backoff(myd, myd->attempt);
+         beginTx(myd, tid);
+@@ -1814,7 +1882,7 @@ struct tx_field {
+     T operator->() { return load(); }
+
+     // Copy constructor
+-    tx_field<T>(const tx_field<T>& other) { store(other.load()); }
++    tx_field(const tx_field<T>& other) { store(other.load()); }
+
+     // Assignment operator from a tx_field<T>
+     tx_field<T>& operator=(const tx_field<T>& other) {
+@@ -2262,6 +2330,7 @@ struct tx_field {
+         uint64_t tableIndex = hidx((size_t)addr);
+         LockTableNode* ltn = &globals.gHashLock[tableIndex];
+         std::atomic<uint64_t>* mutex = &ltn->mutex;
++        MULTIVERSE_LINCHECK_TX_WRITE(addr, tableIndex);
+
+         #ifdef ENABLE_SNAPSHOT_ISOLATION
+         if (myd->tx_type == TX_IS_SNAPSHOT_ISOLATION) {
+@@ -2282,9 +2351,12 @@ struct tx_field {
+             break;
+         }
+
++        MULTIVERSE_LINCHECK_TX_LOCK_ATTEMPT(tableIndex);
+         if (!tryWriteLock(myd->tid, mutex, sl)) {
++            MULTIVERSE_LINCHECK_TX_LOCK_FAILED(tableIndex);
+             abortTx(myd);
+         }
++        MULTIVERSE_LINCHECK_TX_LOCK_ACQUIRED(tableIndex);
+
+         if (myd->forceVersioning) {
+             forceVersionedStore(myd, addr, newVal, tableIndex, ltn, getTS(sl));
+@@ -2338,6 +2410,9 @@ struct tx_field {
+         #endif
+
+         myd->readCount++;
++        void* addr = (void*)(&data);
++        uint64_t tableIndex = hidx((size_t)addr);
++        MULTIVERSE_LINCHECK_TX_READ(addr, tableIndex, myd->rClock);
+
+         if (__glibc_unlikely(myd->tx_type & TX_IS_SNAPSHOT)) {
+             return snapshotLoad();
+@@ -2400,6 +2475,7 @@ void thread_registry_deregister_thread() {
+
+ [[noreturn]] void abortTx(OpData* myd) {
+     std::atomic_signal_fence(std::memory_order_seq_cst);
++    MULTIVERSE_LINCHECK_TX_ABORT("abortTx");
+
+     myd->writeSet.rollback(myd->tid);
+     myd->snapshotWriteSet.rollback(myd->tid);
+@@ -2458,4 +2534,4 @@ void thread_registry_deregister_thread() {
+ }
+ // #endif // MICROBENCH
+
+-}
+\ No newline at end of file
++}
