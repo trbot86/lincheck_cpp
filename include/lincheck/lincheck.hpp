@@ -2242,6 +2242,11 @@ struct StmEventRecord {
     std::string kind;
     std::string description;
     std::string address_id;
+    std::string location_handle_id;
+    std::string object_lifetime_id;
+    std::size_t object_lifetime_generation = 0;
+    bool has_object_lifetime_generation = false;
+    std::string field_id;
     bool read_only = false;
     bool has_read_only = false;
     std::uint64_t lock_slot = 0;
@@ -2256,6 +2261,12 @@ struct StmEventRecord {
     std::string reason;
     std::uint64_t transaction_id = 0;
     int transaction_depth = 0;
+    std::uint64_t logical_transaction_id = 0;
+    std::string label;
+    std::string type_name;
+    Value value;
+    bool has_value = false;
+    bool value_supported = true;
 };
 
 inline std::string to_string(const StmEventRecord& record) {
@@ -2269,6 +2280,22 @@ inline std::string to_string(const StmEventRecord& record) {
         record.description.find("address=" + record.address_id) == std::string::npos) {
         out << " address=" << record.address_id;
     }
+    if (!record.location_handle_id.empty() &&
+        record.description.find("location_handle=" + record.location_handle_id) == std::string::npos) {
+        out << " location_handle=" << record.location_handle_id;
+    }
+    if (!record.object_lifetime_id.empty() &&
+        record.description.find("object_lifetime=" + record.object_lifetime_id) == std::string::npos) {
+        out << " object_lifetime=" << record.object_lifetime_id;
+    }
+    if (record.has_object_lifetime_generation &&
+        record.description.find("object_generation=") == std::string::npos) {
+        out << " object_generation=" << record.object_lifetime_generation;
+    }
+    if (!record.field_id.empty() &&
+        record.description.find("field=" + record.field_id) == std::string::npos) {
+        out << " field=" << record.field_id;
+    }
     if (record.transaction_id != 0 &&
         record.description.find("tx_id=") == std::string::npos) {
         out << " tx_id=" << record.transaction_id;
@@ -2278,6 +2305,1954 @@ inline std::string to_string(const StmEventRecord& record) {
         out << " tx_depth=" << record.transaction_depth;
     }
     return out.str();
+}
+
+enum class StmOpacityTransactionOutcome {
+    committed,
+    aborted,
+    live
+};
+
+inline const char* stm_opacity_outcome_name(StmOpacityTransactionOutcome outcome) {
+    switch (outcome) {
+        case StmOpacityTransactionOutcome::committed: return "committed";
+        case StmOpacityTransactionOutcome::aborted: return "aborted";
+        case StmOpacityTransactionOutcome::live: return "live";
+    }
+    return "unknown";
+}
+
+enum class StmOpacityStatus {
+    ok,
+    malformed_history,
+    violation,
+    search_limit_exceeded
+};
+
+enum class StmLifetimePolicy {
+    value_history_only,
+    strict_lifetimes
+};
+
+inline const char* stm_opacity_status_name(StmOpacityStatus status) {
+    switch (status) {
+        case StmOpacityStatus::ok: return "ok";
+        case StmOpacityStatus::malformed_history: return "malformed_history";
+        case StmOpacityStatus::violation: return "violation";
+        case StmOpacityStatus::search_limit_exceeded: return "search_limit_exceeded";
+    }
+    return "unknown";
+}
+
+inline const char* stm_lifetime_policy_name(StmLifetimePolicy policy) {
+    switch (policy) {
+        case StmLifetimePolicy::value_history_only: return "value_history_only";
+        case StmLifetimePolicy::strict_lifetimes: return "strict_lifetimes";
+    }
+    return "unknown";
+}
+
+struct StmOpacityLocation {
+    std::string location_id;
+    std::string address_id;
+    std::string identity_kind = "raw_address_generation";
+    std::string location_handle_id;
+    std::string object_lifetime_id;
+    std::size_t object_lifetime_generation = 0;
+    bool has_object_lifetime_generation = false;
+    std::string field_id;
+    std::string label;
+    std::string type_name;
+    Value initial_value;
+    bool has_initial_value = false;
+    bool destroyed = false;
+    std::size_t generation = 0;
+    std::size_t register_event_index = 0;
+    std::size_t init_event_index = 0;
+    std::size_t destroy_event_index = 0;
+};
+
+struct StmOpacityAccess {
+    bool write = false;
+    std::size_t sequence = 0;
+    std::size_t event_index = 0;
+    std::string address_id;
+    std::string location_id;
+    std::string identity_kind;
+    std::string location_handle_id;
+    std::string object_lifetime_id;
+    std::size_t object_lifetime_generation = 0;
+    bool has_object_lifetime_generation = false;
+    std::string field_id;
+    std::size_t location_generation = 0;
+    Value value;
+    std::uint64_t lock_slot = 0;
+    bool has_lock_slot = false;
+    std::uint64_t version = 0;
+    bool has_version = false;
+};
+
+struct StmOpacityTransactionAttempt {
+    std::uint64_t transaction_id = 0;
+    std::uint64_t logical_transaction_id = 0;
+    int attempt = 0;
+    int thread_id = -1;
+    std::optional<OperationContext> operation;
+    bool read_only = false;
+    bool has_read_only = false;
+    StmOpacityTransactionOutcome outcome = StmOpacityTransactionOutcome::live;
+    bool has_begin = false;
+    bool has_end = false;
+    std::size_t begin_sequence = 0;
+    std::size_t begin_event_index = 0;
+    std::size_t end_sequence = 0;
+    std::size_t end_event_index = 0;
+    std::vector<StmOpacityAccess> accesses;
+};
+
+struct StmOpacityHistory {
+    std::unordered_map<std::string, StmOpacityLocation> locations;
+    std::vector<StmOpacityTransactionAttempt> transactions;
+    StmLifetimePolicy lifetime_policy = StmLifetimePolicy::value_history_only;
+    std::size_t ignored_lifetime_anomalies = 0;
+    std::vector<std::string> ignored_lifetime_anomaly_samples;
+};
+
+struct StmOpacityHistoryBuildOptions {
+    StmLifetimePolicy lifetime_policy = StmLifetimePolicy::value_history_only;
+};
+
+struct StmOpacityHistoryBuildResult {
+    StmOpacityStatus status = StmOpacityStatus::ok;
+    std::string explanation = "STM opacity history is well formed";
+    StmOpacityHistory history;
+    StmLifetimePolicy lifetime_policy = StmLifetimePolicy::value_history_only;
+    std::size_t ignored_lifetime_anomalies = 0;
+    std::vector<std::string> ignored_lifetime_anomaly_samples;
+
+    bool success() const { return status == StmOpacityStatus::ok; }
+};
+
+struct StmOpacityVerificationOptions {
+    std::size_t max_committed_orders = 0;
+};
+
+struct StmOpacityVerificationResult {
+    StmOpacityStatus status = StmOpacityStatus::ok;
+    std::string explanation = "STM opacity history is opaque";
+    std::vector<std::uint64_t> committed_order;
+    std::size_t committed_transaction_count = 0;
+    std::size_t observer_transaction_count = 0;
+    std::size_t committed_order_search_space_upper_bound = 0;
+    std::size_t committed_order_search_limit = 0;
+    std::size_t committed_orders_explored = 0;
+    std::size_t committed_order_memo_entries = 0;
+    std::size_t committed_order_prefixes_pruned = 0;
+    std::size_t read_from_constraints = 0;
+    std::size_t ordering_graph_edges = 0;
+    std::size_t ordering_graph_transitive_edges = 0;
+    std::size_t ordering_graph_candidate_prunes = 0;
+    std::size_t ambiguous_read_from_constraints = 0;
+    std::size_t ambiguous_read_from_candidate_prunes = 0;
+    std::size_t ambiguous_read_from_source_before_reader_prunes = 0;
+    std::size_t ambiguous_read_from_conflicting_writer_prunes = 0;
+    std::size_t ambiguous_read_from_sources_eliminated = 0;
+    std::size_t ambiguous_read_from_sources_shadowed = 0;
+    std::size_t ambiguous_read_from_initial_sources_eliminated = 0;
+    std::size_t ambiguous_read_from_promoted_constraints = 0;
+    StmLifetimePolicy lifetime_policy = StmLifetimePolicy::value_history_only;
+    std::size_t ignored_lifetime_anomalies = 0;
+    std::size_t observer_checks = 0;
+    bool search_limit_exceeded = false;
+    bool ordering_graph_cycle = false;
+    std::vector<std::string> read_from_witnesses;
+    std::vector<std::string> ambiguous_read_from_samples;
+    std::vector<std::string> ordering_graph_samples;
+    std::vector<std::string> rejected_prefix_samples;
+    std::vector<std::string> ignored_lifetime_anomaly_samples;
+
+    bool success() const { return status == StmOpacityStatus::ok; }
+};
+
+namespace detail {
+
+inline void append_stm_opacity_sample(
+    std::vector<std::string>& samples,
+    std::string sample,
+    std::size_t limit = 8
+) {
+    if (samples.size() < limit) {
+        samples.push_back(std::move(sample));
+    }
+}
+
+inline std::string stm_opacity_location_label(const std::string& location_id, const StmOpacityHistory& history) {
+    auto it = history.locations.find(location_id);
+    if (it == history.locations.end() || it->second.label.empty()) return location_id;
+    return it->second.label + "(" + location_id + ")";
+}
+
+inline std::string stm_opacity_tx_label(const StmOpacityTransactionAttempt& tx) {
+    std::ostringstream out;
+    out << "tx#" << tx.transaction_id;
+    if (tx.logical_transaction_id != 0) {
+        out << "/logical#" << tx.logical_transaction_id;
+    }
+    if (tx.attempt != 0) {
+        out << "/attempt#" << tx.attempt;
+    }
+    if (tx.thread_id >= 0) {
+        out << "/thread#" << tx.thread_id;
+    }
+    append_operation_context_label(out, tx.operation);
+    return out.str();
+}
+
+inline std::string stm_opacity_access_label(const StmOpacityAccess& access, const StmOpacityHistory& history) {
+    std::ostringstream out;
+    out << (access.write ? "write" : "read")
+        << " " << stm_opacity_location_label(access.location_id, history)
+        << "=" << access.value.to_string()
+        << " at event " << access.event_index;
+    return out.str();
+}
+
+inline StmOpacityHistoryBuildResult malformed_stm_opacity_history(
+    StmOpacityHistory history,
+    std::string explanation
+) {
+    StmOpacityHistoryBuildResult result;
+    result.status = StmOpacityStatus::malformed_history;
+    result.explanation = std::move(explanation);
+    result.lifetime_policy = history.lifetime_policy;
+    result.ignored_lifetime_anomalies = history.ignored_lifetime_anomalies;
+    result.ignored_lifetime_anomaly_samples = history.ignored_lifetime_anomaly_samples;
+    result.history = std::move(history);
+    return result;
+}
+
+} // namespace detail
+
+inline StmOpacityHistoryBuildResult build_stm_opacity_history(
+    const std::vector<StmEventRecord>& events,
+    StmOpacityHistoryBuildOptions options = {}
+) {
+    StmOpacityHistory history;
+    history.lifetime_policy = options.lifetime_policy;
+    const bool strict_lifetimes = options.lifetime_policy == StmLifetimePolicy::strict_lifetimes;
+    std::unordered_map<std::string, std::size_t> tx_index_by_id;
+    std::unordered_map<std::string, std::string> active_location_by_address;
+    std::unordered_map<std::string, std::string> active_location_by_handle;
+    std::unordered_map<std::string, std::unordered_set<std::string>> active_explicit_locations_by_address;
+    std::unordered_map<std::string, std::size_t> next_generation_by_address;
+    std::unordered_set<std::string> destroyed_location_handles;
+    std::unordered_set<std::string> explicit_addresses_seen;
+    std::unordered_set<std::string> ignored_raw_destroyed_addresses;
+    std::unordered_set<std::string> live_transactions;
+
+    auto fail = [&](std::string explanation) {
+        return detail::malformed_stm_opacity_history(std::move(history), std::move(explanation));
+    };
+
+    auto require_address = [&](const StmEventRecord& event) -> std::optional<std::string> {
+        if (!event.address_id.empty()) return event.address_id;
+        return std::nullopt;
+    };
+
+    auto ignore_lifetime_anomaly = [&](std::string explanation) {
+        ++history.ignored_lifetime_anomalies;
+        detail::append_stm_opacity_sample(history.ignored_lifetime_anomaly_samples, std::move(explanation));
+    };
+
+    auto has_explicit_location = [](const StmEventRecord& event) {
+        return !event.location_handle_id.empty();
+    };
+
+    auto location_event_label = [](const StmEventRecord& event) {
+        if (!event.location_handle_id.empty()) return "location handle " + event.location_handle_id;
+        if (!event.address_id.empty()) return "location " + event.address_id;
+        return std::string("location <unknown>");
+    };
+
+    auto require_supported_value = [&](const StmEventRecord& event) -> std::optional<Value> {
+        if (!event.value_supported) return std::nullopt;
+        if (!event.has_value) return std::nullopt;
+        return event.value;
+    };
+
+    auto tx_key = [](const StmEventRecord& event) {
+        return std::to_string(event.thread_id) + ":" + std::to_string(event.transaction_id);
+    };
+
+    auto location_key = [](const std::string& address, std::size_t generation) {
+        if (generation == 0) return address;
+        return address + "#gen" + std::to_string(generation);
+    };
+
+    auto explicit_location_identity_kind = [](const StmEventRecord& event) {
+        return event.object_lifetime_id.empty() ? std::string("explicit_handle") : std::string("object_lifetime_field");
+    };
+
+    auto find_tx = [&](const StmEventRecord& event) -> StmOpacityTransactionAttempt* {
+        auto it = tx_index_by_id.find(tx_key(event));
+        if (it == tx_index_by_id.end()) return nullptr;
+        return &history.transactions[it->second];
+    };
+
+    auto require_tx = [&](const StmEventRecord& event) -> StmOpacityTransactionAttempt* {
+        if (event.transaction_id == 0) return nullptr;
+        return find_tx(event);
+    };
+
+    auto ensure_active_location = [&](const StmEventRecord& event, const std::string& address)
+        -> std::variant<StmOpacityLocation*, std::string> {
+        auto explicit_active = active_explicit_locations_by_address.find(address);
+        if (explicit_active != active_explicit_locations_by_address.end() && !explicit_active->second.empty()) {
+            const auto explanation = "malformed STM opacity history: raw-address-only event for location " + address +
+                " overlaps active explicit location handles; non-quiescent reuse requires every access to carry a stable handle";
+            if (strict_lifetimes) return explanation;
+            ignore_lifetime_anomaly("ignored raw-address lifetime anomaly at event " +
+                std::to_string(event.event_index) + ": " + explanation);
+        }
+        if (!live_transactions.empty() && explicit_addresses_seen.find(address) != explicit_addresses_seen.end()) {
+            const auto explanation = "malformed STM opacity history: raw-address-only event for location " + address +
+                " occurred while transactions were live after an explicit handle was used for the same address; " +
+                "non-quiescent reuse requires every access to carry a stable handle";
+            if (strict_lifetimes) return explanation;
+            ignore_lifetime_anomaly("ignored raw-address lifetime anomaly at event " +
+                std::to_string(event.event_index) + ": " + explanation);
+        }
+        auto active = active_location_by_address.find(address);
+        if (active != active_location_by_address.end()) {
+            return &history.locations.at(active->second);
+        }
+
+        const auto generation = strict_lifetimes ? next_generation_by_address[address] : 0;
+        if (strict_lifetimes && generation > 0 && !live_transactions.empty()) {
+            return "malformed STM opacity history: location " + address +
+                " was reused while transactions were live; address reuse requires a quiescent lifetime boundary";
+        }
+
+        const auto key = location_key(address, generation);
+        auto& location = history.locations[key];
+        location.location_id = key;
+        location.address_id = address;
+        location.identity_kind = "raw_address_generation";
+        location.generation = generation;
+        location.destroyed = false;
+        if (generation > 0) {
+            location.register_event_index = event.event_index;
+        }
+        active_location_by_address[address] = key;
+        return &location;
+    };
+
+    auto current_active_location = [&](const std::string& address) -> StmOpacityLocation* {
+        auto active = active_location_by_address.find(address);
+        if (active == active_location_by_address.end()) return nullptr;
+        return &history.locations.at(active->second);
+    };
+
+    auto address_was_destroyed = [&](const std::string& address) {
+        return next_generation_by_address.find(address) != next_generation_by_address.end() &&
+            next_generation_by_address[address] > 0;
+    };
+
+    auto merge_explicit_location_metadata = [&](StmOpacityLocation& location, const StmEventRecord& event)
+        -> std::optional<std::string> {
+        if (!event.address_id.empty()) {
+            if (!location.address_id.empty() && location.address_id != event.address_id) {
+                return "malformed STM opacity history: location handle " + event.location_handle_id +
+                    " was observed with conflicting addresses " + location.address_id + " and " + event.address_id;
+            }
+            location.address_id = event.address_id;
+        }
+        if (!event.object_lifetime_id.empty()) {
+            if (!location.object_lifetime_id.empty() && location.object_lifetime_id != event.object_lifetime_id) {
+                return "malformed STM opacity history: location handle " + event.location_handle_id +
+                    " was observed with conflicting object lifetimes " + location.object_lifetime_id +
+                    " and " + event.object_lifetime_id;
+            }
+            location.object_lifetime_id = event.object_lifetime_id;
+        }
+        if (event.has_object_lifetime_generation) {
+            if (location.has_object_lifetime_generation &&
+                location.object_lifetime_generation != event.object_lifetime_generation) {
+                return "malformed STM opacity history: location handle " + event.location_handle_id +
+                    " was observed with conflicting object generations " +
+                    std::to_string(location.object_lifetime_generation) + " and " +
+                    std::to_string(event.object_lifetime_generation);
+            }
+            location.object_lifetime_generation = event.object_lifetime_generation;
+            location.has_object_lifetime_generation = true;
+        }
+        if (!event.field_id.empty()) {
+            if (!location.field_id.empty() && location.field_id != event.field_id) {
+                return "malformed STM opacity history: location handle " + event.location_handle_id +
+                    " was observed with conflicting field IDs " + location.field_id + " and " + event.field_id;
+            }
+            location.field_id = event.field_id;
+        }
+        location.identity_kind = explicit_location_identity_kind(event);
+        location.location_handle_id = event.location_handle_id;
+        return std::nullopt;
+    };
+
+    auto ensure_explicit_location = [&](const StmEventRecord& event)
+        -> std::variant<StmOpacityLocation*, std::string> {
+        if (event.location_handle_id.empty()) {
+            return "malformed STM opacity history: explicit location event without a handle at event " +
+                std::to_string(event.event_index);
+        }
+        if (destroyed_location_handles.find(event.location_handle_id) != destroyed_location_handles.end()) {
+            return "malformed STM opacity history: location handle " + event.location_handle_id +
+                " at event " + std::to_string(event.event_index) +
+                " refers to a destroyed explicit lifetime";
+        }
+        auto active = active_location_by_handle.find(event.location_handle_id);
+        if (active != active_location_by_handle.end()) {
+            auto& location = history.locations.at(active->second);
+            if (auto error = merge_explicit_location_metadata(location, event)) {
+                return *error;
+            }
+            if (!location.address_id.empty() &&
+                active_location_by_address.find(location.address_id) != active_location_by_address.end()) {
+                const auto explanation = "malformed STM opacity history: explicit location handle " + event.location_handle_id +
+                    " overlaps active raw-address location " + location.address_id +
+                    "; non-quiescent reuse requires every access to carry a stable handle";
+                if (strict_lifetimes) return explanation;
+                ignore_lifetime_anomaly("ignored raw-address lifetime anomaly at event " +
+                    std::to_string(event.event_index) + ": " + explanation);
+            }
+            if (!location.address_id.empty()) {
+                explicit_addresses_seen.insert(location.address_id);
+                active_explicit_locations_by_address[location.address_id].insert(event.location_handle_id);
+            }
+            return &location;
+        }
+
+        const auto key = event.location_handle_id;
+        auto& location = history.locations[key];
+        location.location_id = key;
+        location.identity_kind = explicit_location_identity_kind(event);
+        location.location_handle_id = event.location_handle_id;
+        location.generation = 0;
+        location.destroyed = false;
+        if (auto error = merge_explicit_location_metadata(location, event)) {
+            return *error;
+        }
+        if (!location.address_id.empty() &&
+            active_location_by_address.find(location.address_id) != active_location_by_address.end()) {
+            const auto explanation = "malformed STM opacity history: explicit location handle " + event.location_handle_id +
+                " overlaps active raw-address location " + location.address_id +
+                "; non-quiescent reuse requires every access to carry a stable handle";
+            if (strict_lifetimes) return explanation;
+            ignore_lifetime_anomaly("ignored raw-address lifetime anomaly at event " +
+                std::to_string(event.event_index) + ": " + explanation);
+        }
+        active_location_by_handle[event.location_handle_id] = key;
+        if (!location.address_id.empty()) {
+            explicit_addresses_seen.insert(location.address_id);
+            active_explicit_locations_by_address[location.address_id].insert(event.location_handle_id);
+        }
+        return &location;
+    };
+
+    auto current_explicit_location = [&](const std::string& handle) -> StmOpacityLocation* {
+        auto active = active_location_by_handle.find(handle);
+        if (active == active_location_by_handle.end()) return nullptr;
+        return &history.locations.at(active->second);
+    };
+
+    for (const auto& event : events) {
+        if (event.kind == "tx_location_register") {
+            if (has_explicit_location(event)) {
+                auto location_result = ensure_explicit_location(event);
+                if (auto* error = std::get_if<std::string>(&location_result)) {
+                    return fail(*error);
+                }
+                auto& location = **std::get_if<StmOpacityLocation*>(&location_result);
+                location.register_event_index = event.event_index;
+                if (!event.label.empty()) location.label = event.label;
+                if (!event.type_name.empty()) location.type_name = event.type_name;
+                location.destroyed = false;
+                continue;
+            }
+            const auto address = require_address(event);
+            if (!address) {
+                return fail("malformed STM opacity history: location register without address at event " +
+                    std::to_string(event.event_index));
+            }
+            if (!strict_lifetimes && ignored_raw_destroyed_addresses.erase(*address) > 0) {
+                ignore_lifetime_anomaly(
+                    "ignored raw-address lifetime anomaly at event " + std::to_string(event.event_index) +
+                    ": location " + *address +
+                    " was registered after a destroy hook; value_history_only keeps the raw address as one logical location"
+                );
+            }
+            auto location_result = ensure_active_location(event, *address);
+            if (auto* error = std::get_if<std::string>(&location_result)) {
+                return fail(*error);
+            }
+            auto& location = **std::get_if<StmOpacityLocation*>(&location_result);
+            location.register_event_index = event.event_index;
+            if (!event.label.empty()) location.label = event.label;
+            if (!event.type_name.empty()) location.type_name = event.type_name;
+            location.destroyed = false;
+            continue;
+        }
+
+        if (event.kind == "tx_location_init") {
+            if (has_explicit_location(event)) {
+                const auto value = require_supported_value(event);
+                if (!value) {
+                    return fail("malformed STM opacity history: " + location_event_label(event) +
+                        " init at event " + std::to_string(event.event_index) +
+                        (event.value_supported ? " missing a value" : " has an unsupported value type"));
+                }
+                auto location_result = ensure_explicit_location(event);
+                if (auto* error = std::get_if<std::string>(&location_result)) {
+                    return fail(*error);
+                }
+                auto& location = **std::get_if<StmOpacityLocation*>(&location_result);
+                if (!event.label.empty()) location.label = event.label;
+                if (!event.type_name.empty()) location.type_name = event.type_name;
+                if (location.has_initial_value && !(location.initial_value == *value)) {
+                    return fail("malformed STM opacity history: " + location_event_label(event) +
+                        " was initialized with conflicting values " +
+                        location.initial_value.to_string() + " and " + value->to_string());
+                }
+                location.initial_value = *value;
+                location.has_initial_value = true;
+                location.init_event_index = event.event_index;
+                location.destroyed = false;
+                continue;
+            }
+            const auto address = require_address(event);
+            if (!address) {
+                return fail("malformed STM opacity history: location init without address at event " +
+                    std::to_string(event.event_index));
+            }
+            const auto value = require_supported_value(event);
+            if (!value) {
+                return fail("malformed STM opacity history: location " + *address +
+                    " init at event " + std::to_string(event.event_index) +
+                    (event.value_supported ? " missing a value" : " has an unsupported value type"));
+            }
+            if (!strict_lifetimes && ignored_raw_destroyed_addresses.erase(*address) > 0) {
+                ignore_lifetime_anomaly(
+                    "ignored raw-address lifetime anomaly at event " + std::to_string(event.event_index) +
+                    ": location " + *address +
+                    " was initialized after a destroy hook; value_history_only keeps the raw address as one logical location"
+                );
+            }
+            auto location_result = ensure_active_location(event, *address);
+            if (auto* error = std::get_if<std::string>(&location_result)) {
+                return fail(*error);
+            }
+            auto& location = **std::get_if<StmOpacityLocation*>(&location_result);
+            if (!event.label.empty()) location.label = event.label;
+            if (!event.type_name.empty()) location.type_name = event.type_name;
+            if (location.has_initial_value && !(location.initial_value == *value)) {
+                const auto explanation = "malformed STM opacity history: location " + *address +
+                    " was initialized with conflicting values " +
+                    location.initial_value.to_string() + " and " + value->to_string();
+                if (strict_lifetimes) return fail(explanation);
+                ignore_lifetime_anomaly(
+                    "ignored raw-address lifetime anomaly at event " + std::to_string(event.event_index) +
+                    ": " + explanation +
+                    "; value_history_only keeps the first initial value and checks later reads/writes against it"
+                );
+                location.destroyed = false;
+                continue;
+            }
+            location.initial_value = *value;
+            location.has_initial_value = true;
+            location.init_event_index = event.event_index;
+            location.destroyed = false;
+            continue;
+        }
+
+        if (event.kind == "tx_location_destroy") {
+            if (has_explicit_location(event)) {
+                auto* location = current_explicit_location(event.location_handle_id);
+                if (location == nullptr) {
+                    return fail("malformed STM opacity history: location handle " + event.location_handle_id +
+                        " destroy at event " + std::to_string(event.event_index) +
+                        (destroyed_location_handles.find(event.location_handle_id) != destroyed_location_handles.end()
+                            ? " refers to an already destroyed explicit lifetime"
+                            : " has no active explicit lifetime"));
+                }
+                if (auto error = merge_explicit_location_metadata(*location, event)) {
+                    return fail(*error);
+                }
+                location->destroyed = true;
+                location->destroy_event_index = event.event_index;
+                active_location_by_handle.erase(event.location_handle_id);
+                if (!location->address_id.empty()) {
+                    auto explicit_active = active_explicit_locations_by_address.find(location->address_id);
+                    if (explicit_active != active_explicit_locations_by_address.end()) {
+                        explicit_active->second.erase(event.location_handle_id);
+                    }
+                }
+                destroyed_location_handles.insert(event.location_handle_id);
+                continue;
+            }
+            const auto address = require_address(event);
+            if (!address) {
+                return fail("malformed STM opacity history: location destroy without address at event " +
+                    std::to_string(event.event_index));
+            }
+            auto* location = current_active_location(*address);
+            if (location == nullptr) {
+                const auto explanation = "malformed STM opacity history: location " + *address +
+                    " destroy at event " + std::to_string(event.event_index) +
+                    (address_was_destroyed(*address)
+                        ? " refers to an already destroyed lifetime"
+                        : " has no active lifetime");
+                if (strict_lifetimes) return fail(explanation);
+                ignore_lifetime_anomaly("ignored raw-address lifetime anomaly at event " +
+                    std::to_string(event.event_index) + ": " + explanation);
+                ignored_raw_destroyed_addresses.insert(*address);
+                continue;
+            }
+            if (!live_transactions.empty()) {
+                const auto explanation = "malformed STM opacity history: location " + *address +
+                    " destroy at event " + std::to_string(event.event_index) +
+                    " occurred while transactions were live; address reuse requires a quiescent lifetime boundary";
+                if (strict_lifetimes) return fail(explanation);
+                ignore_lifetime_anomaly("ignored raw-address lifetime anomaly at event " +
+                    std::to_string(event.event_index) + ": " + explanation);
+            }
+            location->destroyed = true;
+            location->destroy_event_index = event.event_index;
+            if (strict_lifetimes) {
+                active_location_by_address.erase(*address);
+                next_generation_by_address[*address] = location->generation + 1;
+            } else {
+                ignored_raw_destroyed_addresses.insert(*address);
+            }
+            continue;
+        }
+
+        if (event.kind == "tx_begin") {
+            if (event.transaction_id == 0) {
+                return fail("malformed STM opacity history: tx_begin without transaction id at event " +
+                    std::to_string(event.event_index));
+            }
+            if (find_tx(event) != nullptr) {
+                return fail("malformed STM opacity history: duplicate tx_begin for tx#" +
+                    std::to_string(event.transaction_id) + " at event " + std::to_string(event.event_index));
+            }
+            StmOpacityTransactionAttempt tx;
+            tx.transaction_id = event.transaction_id;
+            tx.logical_transaction_id = event.logical_transaction_id;
+            tx.attempt = event.attempt;
+            tx.thread_id = event.thread_id;
+            tx.operation = event.operation;
+            tx.read_only = event.read_only;
+            tx.has_read_only = event.has_read_only;
+            tx.has_begin = true;
+            tx.begin_sequence = event.sequence;
+            tx.begin_event_index = event.event_index;
+            const auto key = tx_key(event);
+            tx_index_by_id.emplace(key, history.transactions.size());
+            live_transactions.insert(key);
+            history.transactions.push_back(std::move(tx));
+            continue;
+        }
+
+        if (event.kind == "tx_attempt_metadata") {
+            auto* tx = require_tx(event);
+            if (tx == nullptr) {
+                return fail("malformed STM opacity history: tx_attempt_metadata outside a known transaction at event " +
+                    std::to_string(event.event_index));
+            }
+            tx->logical_transaction_id = event.logical_transaction_id;
+            tx->attempt = event.attempt;
+            continue;
+        }
+
+        if (event.kind == "tx_read" || event.kind == "tx_write") {
+            auto* tx = require_tx(event);
+            if (tx == nullptr || !tx->has_begin) {
+                return fail("malformed STM opacity history: " + event.kind +
+                    " outside a known transaction at event " + std::to_string(event.event_index));
+            }
+            const auto value = require_supported_value(event);
+            if (!value) {
+                return fail("malformed STM opacity history: " + event.kind +
+                    " for " + location_event_label(event) + " in " + detail::stm_opacity_tx_label(*tx) +
+                    (event.value_supported ? " is missing a value hook" : " has an unsupported value type"));
+            }
+            StmOpacityLocation* location = nullptr;
+            std::string address_id;
+            if (has_explicit_location(event)) {
+                auto location_result = ensure_explicit_location(event);
+                if (auto* error = std::get_if<std::string>(&location_result)) {
+                    return fail(*error);
+                }
+                location = *std::get_if<StmOpacityLocation*>(&location_result);
+                address_id = event.address_id.empty() ? location->address_id : event.address_id;
+            } else {
+                const auto address = require_address(event);
+                if (!address) {
+                    return fail("malformed STM opacity history: " + event.kind +
+                        " without address in " + detail::stm_opacity_tx_label(*tx));
+                }
+                auto* active_location = current_active_location(*address);
+                if (!strict_lifetimes && ignored_raw_destroyed_addresses.find(*address) != ignored_raw_destroyed_addresses.end()) {
+                    ignore_lifetime_anomaly(
+                        "ignored raw-address lifetime anomaly at event " + std::to_string(event.event_index) +
+                        ": " + event.kind + " accesses destroyed location " + *address +
+                        " in " + detail::stm_opacity_tx_label(*tx) +
+                        "; value_history_only keeps checking the observed value history"
+                    );
+                }
+                if (active_location == nullptr && address_was_destroyed(*address)) {
+                    const auto explanation = "malformed STM opacity history: " + event.kind +
+                        " accesses destroyed location " + *address +
+                        " in " + detail::stm_opacity_tx_label(*tx);
+                    if (strict_lifetimes) return fail(explanation);
+                    ignore_lifetime_anomaly("ignored raw-address lifetime anomaly at event " +
+                        std::to_string(event.event_index) + ": " + explanation);
+                }
+                if (active_location == nullptr) {
+                    auto location_result = ensure_active_location(event, *address);
+                    if (auto* error = std::get_if<std::string>(&location_result)) {
+                        return fail(*error);
+                    }
+                    active_location = *std::get_if<StmOpacityLocation*>(&location_result);
+                }
+                location = active_location;
+                address_id = *address;
+            }
+            StmOpacityAccess access;
+            access.write = event.kind == "tx_write";
+            access.sequence = event.sequence;
+            access.event_index = event.event_index;
+            access.address_id = address_id;
+            access.location_id = location->location_id;
+            access.identity_kind = location->identity_kind;
+            access.location_handle_id = location->location_handle_id;
+            access.object_lifetime_id = location->object_lifetime_id;
+            access.object_lifetime_generation = location->object_lifetime_generation;
+            access.has_object_lifetime_generation = location->has_object_lifetime_generation;
+            access.field_id = location->field_id;
+            access.location_generation = location->generation;
+            access.value = *value;
+            access.lock_slot = event.lock_slot;
+            access.has_lock_slot = event.has_lock_slot;
+            access.version = event.version;
+            access.has_version = event.has_version;
+            tx->accesses.push_back(std::move(access));
+            continue;
+        }
+
+        if (event.kind == "tx_commit_success" || event.kind == "tx_abort") {
+            auto* tx = require_tx(event);
+            if (tx == nullptr || !tx->has_begin) {
+                return fail("malformed STM opacity history: " + event.kind +
+                    " outside a known transaction at event " + std::to_string(event.event_index));
+            }
+            if (tx->has_end) {
+                return fail("malformed STM opacity history: " + detail::stm_opacity_tx_label(*tx) +
+                    " ended more than once; second end at event " + std::to_string(event.event_index));
+            }
+            tx->outcome = event.kind == "tx_commit_success"
+                ? StmOpacityTransactionOutcome::committed
+                : StmOpacityTransactionOutcome::aborted;
+            tx->has_end = true;
+            tx->end_sequence = event.sequence;
+            tx->end_event_index = event.event_index;
+            if (event.logical_transaction_id != 0) tx->logical_transaction_id = event.logical_transaction_id;
+            if (event.attempt != 0) tx->attempt = event.attempt;
+            live_transactions.erase(tx_key(event));
+            continue;
+        }
+
+        if (event.kind == "tx_retry") {
+            if (event.transaction_id != 0) {
+                auto* tx = find_tx(event);
+                if (tx == nullptr || tx->outcome != StmOpacityTransactionOutcome::aborted) {
+                    return fail("malformed STM opacity history: tx_retry at event " +
+                        std::to_string(event.event_index) +
+                        " did not refer to a previously aborted transaction");
+                }
+            }
+            continue;
+        }
+    }
+
+    for (const auto& tx : history.transactions) {
+        if (!tx.has_begin) {
+            return fail("malformed STM opacity history: tx#" + std::to_string(tx.transaction_id) +
+                " has no begin event");
+        }
+        for (const auto& access : tx.accesses) {
+            const auto location = history.locations.find(access.location_id);
+            if (location == history.locations.end() || !location->second.has_initial_value) {
+                return fail("malformed STM opacity history: " + detail::stm_opacity_access_label(access, history) +
+                    " in " + detail::stm_opacity_tx_label(tx) +
+                    " has no registered initial value");
+            }
+        }
+    }
+
+    std::sort(history.transactions.begin(), history.transactions.end(), [](const auto& left, const auto& right) {
+        if (left.begin_event_index != right.begin_event_index) return left.begin_event_index < right.begin_event_index;
+        return left.transaction_id < right.transaction_id;
+    });
+
+    StmOpacityHistoryBuildResult result;
+    result.lifetime_policy = history.lifetime_policy;
+    result.ignored_lifetime_anomalies = history.ignored_lifetime_anomalies;
+    result.ignored_lifetime_anomaly_samples = history.ignored_lifetime_anomaly_samples;
+    result.history = std::move(history);
+    result.explanation = "STM opacity history is well formed";
+    return result;
+}
+
+namespace detail {
+
+using StmOpacityState = std::unordered_map<std::string, Value>;
+
+inline StmOpacityState make_initial_stm_opacity_state(const StmOpacityHistory& history) {
+    StmOpacityState state;
+    for (const auto& [location_id, location] : history.locations) {
+        if (location.has_initial_value) {
+            state.emplace(location_id, location.initial_value);
+        }
+    }
+    return state;
+}
+
+inline std::string stm_opacity_state_label(const StmOpacityHistory& history, const StmOpacityState& state) {
+    std::vector<std::string> location_ids;
+    location_ids.reserve(state.size());
+    for (const auto& [location_id, value] : state) {
+        location_ids.push_back(location_id);
+    }
+    std::sort(location_ids.begin(), location_ids.end());
+
+    std::ostringstream out;
+    out << "{";
+    for (std::size_t i = 0; i < location_ids.size(); ++i) {
+        if (i != 0) out << ", ";
+        const auto& location_id = location_ids[i];
+        out << stm_opacity_location_label(location_id, history)
+            << "=" << state.at(location_id).to_string();
+    }
+    out << "}";
+    return out.str();
+}
+
+inline std::string stm_opacity_committed_prefix_label(
+    const std::vector<const StmOpacityTransactionAttempt*>& order
+) {
+    if (order.empty()) return "[]";
+    std::ostringstream out;
+    out << "[";
+    for (std::size_t i = 0; i < order.size(); ++i) {
+        if (i != 0) out << ", ";
+        out << stm_opacity_tx_label(*order[i]);
+    }
+    out << "]";
+    return out.str();
+}
+
+inline std::string stm_opacity_search_state_key(
+    const std::vector<bool>& placed,
+    const StmOpacityState& state
+) {
+    std::vector<std::string> location_ids;
+    location_ids.reserve(state.size());
+    for (const auto& [location_id, value] : state) {
+        location_ids.push_back(location_id);
+    }
+    std::sort(location_ids.begin(), location_ids.end());
+
+    std::ostringstream out;
+    out << "placed=";
+    for (bool value : placed) out << (value ? '1' : '0');
+    out << "|state=";
+    for (const auto& location_id : location_ids) {
+        const auto& value = state.at(location_id);
+        out << location_id << "=" << value.stable_hash() << ":" << value.to_string() << ";";
+    }
+    return out.str();
+}
+
+struct StmOpacityCommittedSearchMemo {
+    std::unordered_set<std::string> failed_prefixes;
+};
+
+struct StmOpacityOrderingConstraint {
+    std::size_t before = 0;
+    std::size_t after = 0;
+    std::string reason;
+};
+
+struct StmOpacityReadFromChoiceConstraint {
+    std::size_t reader = 0;
+    std::vector<std::size_t> alternatives;
+    std::vector<std::size_t> conflicting_writers;
+    bool initial_allowed = false;
+    std::string location_id;
+    Value value;
+    std::string reason;
+};
+
+struct StmOpacityOrderingGraph {
+    std::vector<std::vector<bool>> must_precede;
+    std::vector<StmOpacityOrderingConstraint> constraints;
+    std::vector<StmOpacityReadFromChoiceConstraint> read_from_choices;
+    bool inconsistent = false;
+    bool has_cycle = false;
+    std::string explanation;
+};
+
+inline bool stm_opacity_precedes(
+    const StmOpacityTransactionAttempt& left,
+    const StmOpacityTransactionAttempt& right
+) {
+    return left.has_end && right.has_begin && left.end_event_index < right.begin_event_index;
+}
+
+inline StmOpacityState stm_opacity_final_writes(const StmOpacityTransactionAttempt& tx) {
+    StmOpacityState writes;
+    for (const auto& access : tx.accesses) {
+        if (access.write) {
+            writes.insert_or_assign(access.location_id, access.value);
+        }
+    }
+    return writes;
+}
+
+inline std::string stm_opacity_ordering_constraint_label(
+    const std::vector<const StmOpacityTransactionAttempt*>& committed,
+    const StmOpacityOrderingConstraint& constraint
+) {
+    std::ostringstream out;
+    out << stm_opacity_tx_label(*committed[constraint.before])
+        << " -> " << stm_opacity_tx_label(*committed[constraint.after]);
+    if (!constraint.reason.empty()) out << " (" << constraint.reason << ")";
+    return out.str();
+}
+
+inline std::string stm_opacity_tx_index_list_label(
+    const std::vector<const StmOpacityTransactionAttempt*>& committed,
+    const std::vector<std::size_t>& indexes
+) {
+    if (indexes.empty()) return "none";
+    std::ostringstream out;
+    for (std::size_t i = 0; i < indexes.size(); ++i) {
+        if (i != 0) out << ", ";
+        out << stm_opacity_tx_label(*committed[indexes[i]]);
+    }
+    return out.str();
+}
+
+inline std::string stm_opacity_read_from_witness_label(
+    const StmOpacityHistory& history,
+    const std::vector<const StmOpacityTransactionAttempt*>& committed,
+    std::size_t reader_index,
+    const StmOpacityAccess& access,
+    bool initial_matches,
+    const std::vector<std::size_t>& matching_writers,
+    const std::vector<std::size_t>& conflicting_writers
+) {
+    std::ostringstream out;
+    const auto location = history.locations.find(access.location_id);
+    out << stm_opacity_access_label(access, history)
+        << " in " << stm_opacity_tx_label(*committed[reader_index])
+        << "; initial=";
+    if (location != history.locations.end() && location->second.has_initial_value) {
+        out << location->second.initial_value.to_string()
+            << (initial_matches ? " (matches)" : " (differs)");
+    } else {
+        out << "missing";
+    }
+    out << "; matching committed final writers="
+        << stm_opacity_tx_index_list_label(committed, matching_writers)
+        << "; conflicting committed final writers="
+        << stm_opacity_tx_index_list_label(committed, conflicting_writers);
+    return out.str();
+}
+
+inline std::string stm_opacity_ordering_reason_label(
+    const StmOpacityOrderingGraph& graph,
+    const std::vector<const StmOpacityTransactionAttempt*>& committed,
+    std::size_t before,
+    std::size_t after
+) {
+    for (const auto& constraint : graph.constraints) {
+        if (constraint.before == before && constraint.after == after) {
+            return stm_opacity_ordering_constraint_label(committed, constraint);
+        }
+    }
+    return stm_opacity_tx_label(*committed[before]) +
+        " -> " + stm_opacity_tx_label(*committed[after]) +
+        " (transitive ordering constraint)";
+}
+
+inline std::string stm_opacity_read_from_choice_label(
+    const StmOpacityHistory& history,
+    const std::vector<const StmOpacityTransactionAttempt*>& committed,
+    const StmOpacityReadFromChoiceConstraint& choice
+) {
+    std::ostringstream out;
+    out << stm_opacity_tx_label(*committed[choice.reader])
+        << " has ambiguous read-from choices for "
+        << stm_opacity_location_label(choice.location_id, history)
+        << "=" << choice.value.to_string()
+        << "; committed sources=" << stm_opacity_tx_index_list_label(committed, choice.alternatives);
+    if (choice.initial_allowed) {
+        out << "; initial value is also a source";
+    } else {
+        out << "; at least one committed source must precede the reader";
+    }
+    if (!choice.conflicting_writers.empty()) {
+        out << "; conflicting writers="
+            << stm_opacity_tx_index_list_label(committed, choice.conflicting_writers);
+    }
+    if (!choice.reason.empty()) out << " (" << choice.reason << ")";
+    return out.str();
+}
+
+inline void record_stm_opacity_ordering_samples(
+    const StmOpacityHistory& history,
+    const StmOpacityOrderingGraph& graph,
+    const std::vector<const StmOpacityTransactionAttempt*>& committed,
+    StmOpacityVerificationResult& result
+) {
+    for (const auto& constraint : graph.constraints) {
+        append_stm_opacity_sample(
+            result.ordering_graph_samples,
+            stm_opacity_ordering_constraint_label(committed, constraint)
+        );
+    }
+    for (const auto& choice : graph.read_from_choices) {
+        append_stm_opacity_sample(
+            result.ambiguous_read_from_samples,
+            stm_opacity_read_from_choice_label(history, committed, choice)
+        );
+    }
+}
+
+inline bool add_stm_opacity_ordering_constraint(
+    StmOpacityOrderingGraph& graph,
+    const std::vector<const StmOpacityTransactionAttempt*>& committed,
+    std::size_t before,
+    std::size_t after,
+    std::string reason
+) {
+    if (before >= graph.must_precede.size() || after >= graph.must_precede.size()) return false;
+    if (before == after) {
+        graph.inconsistent = true;
+        graph.has_cycle = true;
+        graph.explanation =
+            "ordering constraint requires " + stm_opacity_tx_label(*committed[before]) +
+            " to precede itself";
+        if (!reason.empty()) graph.explanation += ": " + reason;
+        return false;
+    }
+    if (graph.must_precede[before][after]) return false;
+    graph.must_precede[before][after] = true;
+    graph.constraints.push_back(StmOpacityOrderingConstraint{
+        .before = before,
+        .after = after,
+        .reason = std::move(reason)
+    });
+    return true;
+}
+
+inline void close_stm_opacity_ordering_graph(
+    StmOpacityOrderingGraph& graph,
+    const std::vector<const StmOpacityTransactionAttempt*>& committed,
+    StmOpacityVerificationResult& result
+) {
+    const auto count = graph.must_precede.size();
+    for (std::size_t pivot = 0; pivot < count; ++pivot) {
+        for (std::size_t before = 0; before < count; ++before) {
+            if (!graph.must_precede[before][pivot]) continue;
+            for (std::size_t after = 0; after < count; ++after) {
+                if (!graph.must_precede[pivot][after] || graph.must_precede[before][after]) continue;
+                graph.must_precede[before][after] = true;
+                ++result.ordering_graph_transitive_edges;
+            }
+        }
+    }
+
+    for (std::size_t i = 0; i < count; ++i) {
+        if (!graph.must_precede[i][i]) continue;
+        graph.inconsistent = true;
+        graph.has_cycle = true;
+        result.ordering_graph_cycle = true;
+        std::ostringstream out;
+        out << "ordering constraints contain a cycle involving " << stm_opacity_tx_label(*committed[i]);
+        out << "\ncycle contributors:";
+        std::size_t emitted = 0;
+        for (const auto& constraint : graph.constraints) {
+            if (!graph.must_precede[constraint.after][constraint.before]) continue;
+            out << "\n- " << stm_opacity_ordering_constraint_label(committed, constraint);
+            ++emitted;
+            if (emitted == 4) break;
+        }
+        if (emitted == 0) {
+            const auto sample_count = std::min<std::size_t>(graph.constraints.size(), 4);
+            for (std::size_t sample = 0; sample < sample_count; ++sample) {
+                out << "\n- " << stm_opacity_ordering_constraint_label(committed, graph.constraints[sample]);
+            }
+        }
+        graph.explanation = out.str();
+        return;
+    }
+}
+
+inline bool refine_stm_opacity_read_from_choices(
+    const StmOpacityHistory& history,
+    StmOpacityOrderingGraph& graph,
+    const std::vector<const StmOpacityTransactionAttempt*>& committed,
+    StmOpacityVerificationResult& result
+) {
+    bool added_constraint = false;
+    for (auto& choice : graph.read_from_choices) {
+        std::vector<std::size_t> viable_alternatives;
+        viable_alternatives.reserve(choice.alternatives.size());
+        for (const auto source : choice.alternatives) {
+            if (choice.reader < graph.must_precede.size() &&
+                source < graph.must_precede.size() &&
+                graph.must_precede[choice.reader][source]) {
+                ++result.ambiguous_read_from_sources_eliminated;
+                append_stm_opacity_sample(
+                    result.ambiguous_read_from_samples,
+                    "ambiguous read-from eliminated source " +
+                        stm_opacity_tx_label(*committed[source]) +
+                        " for " + stm_opacity_tx_label(*committed[choice.reader]) +
+                        " because " +
+                        stm_opacity_ordering_reason_label(graph, committed, choice.reader, source)
+                );
+                continue;
+            }
+            std::optional<std::size_t> shadowing_conflict;
+            for (const auto conflict : choice.conflicting_writers) {
+                if (source >= graph.must_precede.size() ||
+                    conflict >= graph.must_precede.size() ||
+                    choice.reader >= graph.must_precede.size()) {
+                    continue;
+                }
+                if (graph.must_precede[source][conflict] &&
+                    graph.must_precede[conflict][choice.reader]) {
+                    shadowing_conflict = conflict;
+                    break;
+                }
+            }
+            if (shadowing_conflict) {
+                ++result.ambiguous_read_from_sources_shadowed;
+                append_stm_opacity_sample(
+                    result.ambiguous_read_from_samples,
+                    "ambiguous read-from eliminated source " +
+                        stm_opacity_tx_label(*committed[source]) +
+                        " for " + stm_opacity_tx_label(*committed[choice.reader]) +
+                        " because conflicting writer " +
+                        stm_opacity_tx_label(*committed[*shadowing_conflict]) +
+                        " is forced between the source and reader"
+                );
+                continue;
+            }
+            viable_alternatives.push_back(source);
+        }
+        choice.alternatives = std::move(viable_alternatives);
+
+        if (choice.initial_allowed) {
+            std::optional<std::size_t> forced_conflict;
+            for (const auto conflict : choice.conflicting_writers) {
+                if (conflict >= graph.must_precede.size() ||
+                    choice.reader >= graph.must_precede.size()) {
+                    continue;
+                }
+                if (graph.must_precede[conflict][choice.reader]) {
+                    forced_conflict = conflict;
+                    break;
+                }
+            }
+            if (forced_conflict) {
+                choice.initial_allowed = false;
+                ++result.ambiguous_read_from_initial_sources_eliminated;
+                append_stm_opacity_sample(
+                    result.ambiguous_read_from_samples,
+                    "ambiguous read-from eliminated matching initial source for " +
+                        stm_opacity_tx_label(*committed[choice.reader]) +
+                        " because conflicting writer " +
+                        stm_opacity_tx_label(*committed[*forced_conflict]) +
+                        " must precede the reader"
+                );
+            }
+        }
+
+        if (!choice.initial_allowed && choice.alternatives.empty()) {
+            graph.inconsistent = true;
+            std::ostringstream out;
+            out << "ambiguous read-from for "
+                << stm_opacity_tx_label(*committed[choice.reader])
+                << " at " << stm_opacity_location_label(choice.location_id, history)
+                << "=" << choice.value.to_string()
+                << " has no viable committed source after ordering constraints";
+            graph.explanation = out.str();
+            return added_constraint;
+        }
+
+        if (!choice.initial_allowed && choice.alternatives.size() == 1) {
+            const auto source = choice.alternatives.front();
+            if (add_stm_opacity_ordering_constraint(
+                graph,
+                committed,
+                source,
+                choice.reader,
+                "ambiguous read-from resolved to only viable source for " +
+                    stm_opacity_location_label(choice.location_id, history) +
+                    "=" + choice.value.to_string()
+            )) {
+                ++result.read_from_constraints;
+                ++result.ambiguous_read_from_promoted_constraints;
+                added_constraint = true;
+                append_stm_opacity_sample(
+                    result.ambiguous_read_from_samples,
+                    "ambiguous read-from promoted to non-disjunctive edge " +
+                        stm_opacity_tx_label(*committed[source]) +
+                        " -> " + stm_opacity_tx_label(*committed[choice.reader]) +
+                        " for " + stm_opacity_location_label(choice.location_id, history) +
+                        "=" + choice.value.to_string()
+                );
+            }
+        }
+    }
+    return added_constraint;
+}
+
+inline StmOpacityOrderingGraph build_stm_opacity_ordering_graph(
+    const StmOpacityHistory& history,
+    const std::vector<const StmOpacityTransactionAttempt*>& committed,
+    StmOpacityVerificationResult& result
+) {
+    StmOpacityOrderingGraph graph;
+    graph.must_precede.assign(committed.size(), std::vector<bool>(committed.size(), false));
+
+    for (std::size_t before = 0; before < committed.size(); ++before) {
+        for (std::size_t after = 0; after < committed.size(); ++after) {
+            if (before == after) continue;
+            if (stm_opacity_precedes(*committed[before], *committed[after])) {
+                add_stm_opacity_ordering_constraint(
+                    graph,
+                    committed,
+                    before,
+                    after,
+                    "visible transaction real-time order"
+                );
+            }
+        }
+    }
+
+    std::vector<StmOpacityState> final_writes;
+    final_writes.reserve(committed.size());
+    for (const auto* tx : committed) {
+        final_writes.push_back(stm_opacity_final_writes(*tx));
+    }
+
+    for (std::size_t reader_index = 0; reader_index < committed.size(); ++reader_index) {
+        const auto& reader = *committed[reader_index];
+        StmOpacityState local_writes;
+        for (const auto& access : reader.accesses) {
+            if (access.write) {
+                local_writes.insert_or_assign(access.location_id, access.value);
+                continue;
+            }
+            if (local_writes.find(access.location_id) != local_writes.end()) continue;
+
+            const auto location = history.locations.find(access.location_id);
+            if (location == history.locations.end() || !location->second.has_initial_value) continue;
+            const bool initial_matches = location->second.initial_value == access.value;
+
+            std::vector<std::size_t> matching_writers;
+            std::vector<std::size_t> conflicting_writers;
+            for (std::size_t writer_index = 0; writer_index < committed.size(); ++writer_index) {
+                if (writer_index == reader_index) continue;
+                const auto writer = final_writes[writer_index].find(access.location_id);
+                if (writer == final_writes[writer_index].end()) continue;
+                if (writer->second == access.value) {
+                    matching_writers.push_back(writer_index);
+                } else {
+                    conflicting_writers.push_back(writer_index);
+                }
+            }
+            append_stm_opacity_sample(
+                result.read_from_witnesses,
+                stm_opacity_read_from_witness_label(
+                    history,
+                    committed,
+                    reader_index,
+                    access,
+                    initial_matches,
+                    matching_writers,
+                    conflicting_writers
+                )
+            );
+
+            if (matching_writers.empty() && !initial_matches) {
+                graph.inconsistent = true;
+                std::ostringstream out;
+                out << stm_opacity_access_label(access, history)
+                    << " in " << stm_opacity_tx_label(reader)
+                    << " observed " << access.value.to_string()
+                    << " but has no possible read-from source among the initial value or committed final writes";
+                graph.explanation = out.str();
+                result.ordering_graph_edges = graph.constraints.size();
+                record_stm_opacity_ordering_samples(history, graph, committed, result);
+                return graph;
+            }
+
+            if (matching_writers.empty() && initial_matches) {
+                for (const auto writer_index : conflicting_writers) {
+                    if (add_stm_opacity_ordering_constraint(
+                        graph,
+                        committed,
+                        reader_index,
+                        writer_index,
+                        "read-from initial value observed " + access.value.to_string() +
+                            " for " +
+                            stm_opacity_location_label(access.location_id, history) +
+                            "=" + access.value.to_string()
+                    )) {
+                        ++result.read_from_constraints;
+                    }
+                }
+                continue;
+            }
+
+            if (matching_writers.size() == 1 && !initial_matches) {
+                if (add_stm_opacity_ordering_constraint(
+                    graph,
+                    committed,
+                    matching_writers.front(),
+                    reader_index,
+                    "unique read-from writer for observed " + access.value.to_string() +
+                        " at " +
+                        stm_opacity_location_label(access.location_id, history) +
+                        "=" + access.value.to_string()
+                )) {
+                    ++result.read_from_constraints;
+                }
+            }
+
+            if (matching_writers.size() > 1 && !initial_matches) {
+                graph.read_from_choices.push_back(StmOpacityReadFromChoiceConstraint{
+                    .reader = reader_index,
+                    .alternatives = matching_writers,
+                    .conflicting_writers = conflicting_writers,
+                    .initial_allowed = false,
+                    .location_id = access.location_id,
+                    .value = access.value,
+                    .reason = "ambiguous read-from for " +
+                        stm_opacity_location_label(access.location_id, history) +
+                        "=" + access.value.to_string()
+                });
+                ++result.ambiguous_read_from_constraints;
+                continue;
+            }
+
+            if (!matching_writers.empty() && initial_matches) {
+                graph.read_from_choices.push_back(StmOpacityReadFromChoiceConstraint{
+                    .reader = reader_index,
+                    .alternatives = matching_writers,
+                    .conflicting_writers = conflicting_writers,
+                    .initial_allowed = true,
+                    .location_id = access.location_id,
+                    .value = access.value,
+                    .reason = "ambiguous read-from for " +
+                        stm_opacity_location_label(access.location_id, history) +
+                        "=" + access.value.to_string() +
+                        " with matching initial value"
+                });
+                ++result.ambiguous_read_from_constraints;
+                append_stm_opacity_sample(
+                    result.ambiguous_read_from_samples,
+                    "ambiguous read-from can use the initial value for " +
+                        stm_opacity_access_label(access, history) +
+                        " in " + stm_opacity_tx_label(reader) +
+                        "; source-before-reader pruning is skipped and conflicting-prefix pruning is used; " +
+                        "remaining cases are left to serial-state search; matching writers=" +
+                        stm_opacity_tx_index_list_label(committed, matching_writers)
+                );
+            }
+        }
+    }
+
+    result.ordering_graph_edges = graph.constraints.size();
+    close_stm_opacity_ordering_graph(graph, committed, result);
+    while (!graph.inconsistent &&
+           refine_stm_opacity_read_from_choices(history, graph, committed, result)) {
+        result.ordering_graph_edges = graph.constraints.size();
+        close_stm_opacity_ordering_graph(graph, committed, result);
+    }
+    result.ordering_graph_edges = graph.constraints.size();
+    record_stm_opacity_ordering_samples(history, graph, committed, result);
+    return graph;
+}
+
+inline bool validate_stm_opacity_transaction_reads(
+    const StmOpacityHistory& history,
+    const StmOpacityTransactionAttempt& tx,
+    const StmOpacityState& state,
+    StmOpacityState* committed_state,
+    std::string* explanation
+) {
+    StmOpacityState local_writes;
+    for (const auto& access : tx.accesses) {
+        if (access.write) {
+            local_writes.insert_or_assign(access.location_id, access.value);
+            continue;
+        }
+
+        auto own_write = local_writes.find(access.location_id);
+        const Value* expected = nullptr;
+        std::string source;
+        if (own_write != local_writes.end()) {
+            expected = &own_write->second;
+            source = "prior write in the same transaction";
+        } else {
+            auto committed = state.find(access.location_id);
+            if (committed == state.end()) {
+                if (explanation) {
+                *explanation = detail::stm_opacity_access_label(access, history) +
+                    " in " + detail::stm_opacity_tx_label(tx) +
+                    " reads a location with no initial or committed value; serial state=" +
+                    detail::stm_opacity_state_label(history, state);
+                }
+                return false;
+            }
+            expected = &committed->second;
+            source = "serial prefix";
+        }
+
+        if (!(access.value == *expected)) {
+            if (explanation) {
+                *explanation = detail::stm_opacity_access_label(access, history) +
+                    " in " + detail::stm_opacity_tx_label(tx) +
+                    " observed " + access.value.to_string() +
+                    " but " + source + " contains " + expected->to_string() +
+                    "; serial state=" + detail::stm_opacity_state_label(history, state);
+            }
+            return false;
+        }
+    }
+
+    if (committed_state != nullptr) {
+        *committed_state = state;
+        for (const auto& [location_id, value] : local_writes) {
+            committed_state->insert_or_assign(location_id, value);
+        }
+    }
+    return true;
+}
+
+inline bool stm_opacity_committed_predecessors_placed(
+    const StmOpacityHistory& history,
+    const StmOpacityOrderingGraph& ordering,
+    const std::vector<const StmOpacityTransactionAttempt*>& committed,
+    const std::vector<bool>& placed,
+    const std::vector<const StmOpacityTransactionAttempt*>& order,
+    std::size_t candidate,
+    StmOpacityVerificationResult& result
+) {
+    for (std::size_t i = 0; i < ordering.must_precede.size(); ++i) {
+        if (i == candidate || placed[i]) continue;
+        if (ordering.must_precede[i][candidate]) {
+            ++result.ordering_graph_candidate_prunes;
+            append_stm_opacity_sample(
+                result.rejected_prefix_samples,
+                "committed candidate " + stm_opacity_tx_label(*committed[candidate]) +
+                    " blocked after prefix " + stm_opacity_committed_prefix_label(order) +
+                    " because " + stm_opacity_ordering_reason_label(ordering, committed, i, candidate) +
+                    " is not placed"
+            );
+            return false;
+        }
+    }
+    for (const auto& choice : ordering.read_from_choices) {
+        if (choice.reader != candidate) continue;
+        auto contains_index = [](const std::vector<std::size_t>& values, std::size_t value) {
+            return std::find(values.begin(), values.end(), value) != values.end();
+        };
+        const auto has_source = std::any_of(choice.alternatives.begin(), choice.alternatives.end(), [&](std::size_t source) {
+            return source < placed.size() && placed[source];
+        });
+        if (!choice.initial_allowed && !has_source) {
+            ++result.ambiguous_read_from_candidate_prunes;
+            ++result.ambiguous_read_from_source_before_reader_prunes;
+            append_stm_opacity_sample(
+                result.rejected_prefix_samples,
+                "committed candidate " + stm_opacity_tx_label(*committed[candidate]) +
+                    " blocked after prefix " + stm_opacity_committed_prefix_label(order) +
+                    " because " + stm_opacity_read_from_choice_label(history, committed, choice) +
+                    " has no placed source yet"
+            );
+            return false;
+        }
+
+        std::optional<std::size_t> latest_writer;
+        bool latest_writer_matches = false;
+        for (const auto* placed_tx : order) {
+            for (std::size_t placed_index = 0; placed_index < committed.size(); ++placed_index) {
+                if (committed[placed_index] != placed_tx) continue;
+                if (contains_index(choice.alternatives, placed_index)) {
+                    latest_writer = placed_index;
+                    latest_writer_matches = true;
+                } else if (contains_index(choice.conflicting_writers, placed_index)) {
+                    latest_writer = placed_index;
+                    latest_writer_matches = false;
+                }
+                break;
+            }
+        }
+        if (latest_writer && !latest_writer_matches) {
+            ++result.ambiguous_read_from_candidate_prunes;
+            ++result.ambiguous_read_from_conflicting_writer_prunes;
+            append_stm_opacity_sample(
+                result.rejected_prefix_samples,
+                "committed candidate " + stm_opacity_tx_label(*committed[candidate]) +
+                    " blocked after prefix " + stm_opacity_committed_prefix_label(order) +
+                    " because latest placed writer " + stm_opacity_tx_label(*committed[*latest_writer]) +
+                    " overwrites ambiguous sources for " +
+                    stm_opacity_location_label(choice.location_id, history) +
+                    "=" + choice.value.to_string() +
+                    "; this prefix cannot source " +
+                    stm_opacity_read_from_choice_label(history, committed, choice)
+            );
+            append_stm_opacity_sample(
+                result.ambiguous_read_from_samples,
+                "ambiguous read-from pruned by conflicting latest writer " +
+                    stm_opacity_tx_label(*committed[*latest_writer]) +
+                    " before " + stm_opacity_tx_label(*committed[candidate]) +
+                    " after prefix " + stm_opacity_committed_prefix_label(order)
+            );
+            return false;
+        }
+    }
+    return true;
+}
+
+inline std::size_t saturated_factorial(std::size_t value) {
+    std::size_t result = 1;
+    for (std::size_t i = 2; i <= value; ++i) {
+        if (result > std::numeric_limits<std::size_t>::max() / i) {
+            return std::numeric_limits<std::size_t>::max();
+        }
+        result *= i;
+    }
+    return result;
+}
+
+inline bool verify_stm_opacity_observers(
+    const StmOpacityHistory& history,
+    const std::vector<const StmOpacityTransactionAttempt*>& observers,
+    const std::vector<const StmOpacityTransactionAttempt*>& committed_order,
+    const std::vector<StmOpacityState>& prefix_states,
+    StmOpacityVerificationResult& result,
+    std::string* explanation
+);
+
+inline bool search_stm_opacity_committed_order(
+    const StmOpacityHistory& history,
+    const std::vector<const StmOpacityTransactionAttempt*>& committed,
+    const std::vector<const StmOpacityTransactionAttempt*>& observers,
+    std::vector<bool>& placed,
+    std::vector<const StmOpacityTransactionAttempt*>& order,
+    const StmOpacityState& state,
+    std::vector<StmOpacityState>& prefix_states,
+    const StmOpacityVerificationOptions& options,
+    const StmOpacityOrderingGraph& ordering,
+    StmOpacityCommittedSearchMemo& memo,
+    StmOpacityVerificationResult& result,
+    std::string* first_rejection,
+    bool* completed_order_seen
+) {
+    if (order.size() == committed.size()) {
+        if (
+            options.max_committed_orders != 0 &&
+            result.committed_orders_explored >= options.max_committed_orders
+        ) {
+            result.search_limit_exceeded = true;
+            if (first_rejection != nullptr && first_rejection->empty()) {
+                *first_rejection = "committed-order search limit " +
+                    std::to_string(options.max_committed_orders) +
+                    " was reached before an opaque order was found";
+            }
+            return false;
+        }
+        ++result.committed_orders_explored;
+        if (completed_order_seen != nullptr) *completed_order_seen = true;
+        std::string observer_rejection;
+        if (verify_stm_opacity_observers(
+            history,
+            observers,
+            order,
+            prefix_states,
+            result,
+            &observer_rejection
+        )) {
+            return true;
+        }
+        if (first_rejection != nullptr && first_rejection->empty()) {
+            *first_rejection = "committed order leaves observer inconsistent: " + observer_rejection;
+        }
+        return false;
+    }
+
+    const auto memo_key = stm_opacity_search_state_key(placed, state);
+    if (memo.failed_prefixes.find(memo_key) != memo.failed_prefixes.end()) {
+        ++result.committed_order_prefixes_pruned;
+        return false;
+    }
+
+    bool saw_candidate = false;
+    bool subtree_completed_order = false;
+    for (std::size_t i = 0; i < committed.size(); ++i) {
+        if (placed[i]) continue;
+        if (!stm_opacity_committed_predecessors_placed(history, ordering, committed, placed, order, i, result)) continue;
+        saw_candidate = true;
+
+        StmOpacityState next_state;
+        std::string rejection;
+        if (!validate_stm_opacity_transaction_reads(
+            history,
+            *committed[i],
+            state,
+            &next_state,
+            &rejection
+        )) {
+            const auto sample = "committed candidate " +
+                detail::stm_opacity_tx_label(*committed[i]) +
+                " rejected after prefix " +
+                detail::stm_opacity_committed_prefix_label(order) +
+                " with state " +
+                detail::stm_opacity_state_label(history, state) +
+                ": " + rejection;
+            append_stm_opacity_sample(result.rejected_prefix_samples, sample);
+            if (first_rejection != nullptr && first_rejection->empty()) {
+                *first_rejection = sample;
+            }
+            continue;
+        }
+
+        placed[i] = true;
+        order.push_back(committed[i]);
+        prefix_states.push_back(next_state);
+        bool child_completed_order = false;
+        if (search_stm_opacity_committed_order(
+            history,
+            committed,
+            observers,
+            placed,
+            order,
+            next_state,
+            prefix_states,
+            options,
+            ordering,
+            memo,
+            result,
+            first_rejection,
+            &child_completed_order
+        )) {
+            return true;
+        }
+        if (child_completed_order) {
+            subtree_completed_order = true;
+            if (completed_order_seen != nullptr) *completed_order_seen = true;
+        }
+        prefix_states.pop_back();
+        order.pop_back();
+        placed[i] = false;
+    }
+
+    if (!saw_candidate && first_rejection != nullptr && first_rejection->empty()) {
+        *first_rejection = "remaining committed transactions are blocked by ordering constraints after prefix " +
+            detail::stm_opacity_committed_prefix_label(order) +
+            " with state " + detail::stm_opacity_state_label(history, state);
+    }
+    if (!subtree_completed_order && !result.search_limit_exceeded) {
+        memo.failed_prefixes.insert(memo_key);
+        result.committed_order_memo_entries = memo.failed_prefixes.size();
+    }
+    return false;
+}
+
+inline bool stm_opacity_prefix_respects_real_time(
+    const StmOpacityTransactionAttempt& observer,
+    const std::vector<const StmOpacityTransactionAttempt*>& committed_order,
+    std::size_t prefix_size,
+    std::string* explanation
+) {
+    for (std::size_t i = 0; i < committed_order.size(); ++i) {
+        const auto& committed = *committed_order[i];
+        if (stm_opacity_precedes(committed, observer) && i >= prefix_size) {
+            if (explanation) {
+                *explanation = detail::stm_opacity_tx_label(committed) +
+                    " completed before " + detail::stm_opacity_tx_label(observer) +
+                    " began, but is not in the observer serial prefix";
+            }
+            return false;
+        }
+        if (stm_opacity_precedes(observer, committed) && i < prefix_size) {
+            if (explanation) {
+                *explanation = detail::stm_opacity_tx_label(observer) +
+                    " completed before " + detail::stm_opacity_tx_label(committed) +
+                    " began, but the committed transaction is in the observer serial prefix";
+            }
+            return false;
+        }
+    }
+    return true;
+}
+
+inline bool stm_opacity_observer_prefix_compatible(
+    const std::vector<const StmOpacityTransactionAttempt*>& observers,
+    const std::vector<bool>& assigned,
+    const std::vector<std::size_t>& assignment,
+    std::size_t observer_index,
+    std::size_t prefix
+) {
+    for (std::size_t i = 0; i < observers.size(); ++i) {
+        if (!assigned[i]) continue;
+        if (stm_opacity_precedes(*observers[i], *observers[observer_index]) && assignment[i] > prefix) {
+            return false;
+        }
+        if (stm_opacity_precedes(*observers[observer_index], *observers[i]) && prefix > assignment[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+inline bool search_stm_opacity_observer_prefixes(
+    const std::vector<const StmOpacityTransactionAttempt*>& observers,
+    const std::vector<std::vector<std::size_t>>& candidate_prefixes,
+    std::vector<bool>& assigned,
+    std::vector<std::size_t>& assignment
+) {
+    std::size_t chosen = observers.size();
+    std::size_t best_viable_count = std::numeric_limits<std::size_t>::max();
+    for (std::size_t i = 0; i < observers.size(); ++i) {
+        if (assigned[i]) continue;
+        std::size_t viable_count = 0;
+        for (const auto prefix : candidate_prefixes[i]) {
+            if (stm_opacity_observer_prefix_compatible(observers, assigned, assignment, i, prefix)) {
+                ++viable_count;
+            }
+        }
+        if (viable_count == 0) return false;
+        if (viable_count < best_viable_count) {
+            chosen = i;
+            best_viable_count = viable_count;
+        }
+    }
+
+    if (chosen == observers.size()) return true;
+
+    for (const auto prefix : candidate_prefixes[chosen]) {
+        if (!stm_opacity_observer_prefix_compatible(observers, assigned, assignment, chosen, prefix)) continue;
+        assigned[chosen] = true;
+        assignment[chosen] = prefix;
+        if (search_stm_opacity_observer_prefixes(observers, candidate_prefixes, assigned, assignment)) {
+            return true;
+        }
+        assigned[chosen] = false;
+        assignment[chosen] = 0;
+    }
+    return false;
+}
+
+inline std::string stm_opacity_prefix_set_label(const std::vector<std::size_t>& prefixes) {
+    std::ostringstream out;
+    out << "{";
+    for (std::size_t i = 0; i < prefixes.size(); ++i) {
+        if (i != 0) out << ",";
+        out << prefixes[i];
+    }
+    out << "}";
+    return out.str();
+}
+
+inline bool verify_stm_opacity_observers(
+    const StmOpacityHistory& history,
+    const std::vector<const StmOpacityTransactionAttempt*>& observers,
+    const std::vector<const StmOpacityTransactionAttempt*>& committed_order,
+    const std::vector<StmOpacityState>& prefix_states,
+    StmOpacityVerificationResult& result,
+    std::string* explanation
+) {
+    std::vector<std::vector<std::size_t>> candidate_prefixes(observers.size());
+    for (std::size_t observer_index = 0; observer_index < observers.size(); ++observer_index) {
+        const auto* observer = observers[observer_index];
+        std::vector<std::string> rejections;
+        for (std::size_t prefix = 0; prefix < prefix_states.size(); ++prefix) {
+            ++result.observer_checks;
+            std::string real_time_rejection;
+            if (!stm_opacity_prefix_respects_real_time(*observer, committed_order, prefix, &real_time_rejection)) {
+                auto sample = "observer " + detail::stm_opacity_tx_label(*observer) +
+                    " rejected at committed prefix " + std::to_string(prefix) +
+                    " with state " + detail::stm_opacity_state_label(history, prefix_states[prefix]) +
+                    ": " + real_time_rejection;
+                append_stm_opacity_sample(result.rejected_prefix_samples, sample);
+                if (rejections.size() < 4) rejections.push_back(std::move(sample));
+                continue;
+            }
+            std::string read_rejection;
+            if (!validate_stm_opacity_transaction_reads(
+                history,
+                *observer,
+                prefix_states[prefix],
+                nullptr,
+                &read_rejection
+            )) {
+                auto sample = "observer " + detail::stm_opacity_tx_label(*observer) +
+                    " rejected at committed prefix " + std::to_string(prefix) +
+                    " with state " + detail::stm_opacity_state_label(history, prefix_states[prefix]) +
+                    ": " + read_rejection;
+                append_stm_opacity_sample(result.rejected_prefix_samples, sample);
+                if (rejections.size() < 4) rejections.push_back(std::move(sample));
+                continue;
+            }
+            candidate_prefixes[observer_index].push_back(prefix);
+        }
+        if (candidate_prefixes[observer_index].empty()) {
+            if (explanation) {
+                std::ostringstream out;
+                out << detail::stm_opacity_tx_label(*observer)
+                    << " (" << stm_opacity_outcome_name(observer->outcome)
+                    << ") cannot be placed in any committed serial prefix";
+                for (const auto& rejection : rejections) {
+                    out << "\n- " << rejection;
+                }
+                *explanation = out.str();
+            }
+            return false;
+        }
+    }
+
+    std::vector<bool> assigned(observers.size(), false);
+    std::vector<std::size_t> assignment(observers.size(), 0);
+    if (!search_stm_opacity_observer_prefixes(observers, candidate_prefixes, assigned, assignment)) {
+        if (explanation) {
+            std::ostringstream out;
+            out << "observer real-time prefix constraints are inconsistent";
+            for (std::size_t i = 0; i < observers.size() && i < 4; ++i) {
+                out << "\n- " << detail::stm_opacity_tx_label(*observers[i])
+                    << " candidates=" << stm_opacity_prefix_set_label(candidate_prefixes[i]);
+            }
+            *explanation = out.str();
+        }
+        return false;
+    }
+    return true;
+}
+
+inline void append_stm_opacity_diagnostic_context(StmOpacityVerificationResult& result) {
+    auto append_section = [&](std::string_view title, const std::vector<std::string>& lines) {
+        if (lines.empty()) return;
+        result.explanation += "\n" + std::string(title) + ":";
+        for (const auto& line : lines) {
+            result.explanation += "\n- " + line;
+        }
+    };
+
+    append_section("read-from witnesses", result.read_from_witnesses);
+    append_section("ambiguous read-from samples", result.ambiguous_read_from_samples);
+    append_section("ordering constraints", result.ordering_graph_samples);
+    append_section("rejected prefix samples", result.rejected_prefix_samples);
+    append_section("ignored lifetime anomalies", result.ignored_lifetime_anomaly_samples);
+}
+
+} // namespace detail
+
+inline StmOpacityVerificationResult verify_stm_opacity(
+    const StmOpacityHistory& history,
+    StmOpacityVerificationOptions options = {}
+) {
+    StmOpacityVerificationResult result;
+    result.lifetime_policy = history.lifetime_policy;
+    result.ignored_lifetime_anomalies = history.ignored_lifetime_anomalies;
+    result.ignored_lifetime_anomaly_samples = history.ignored_lifetime_anomaly_samples;
+    std::vector<const StmOpacityTransactionAttempt*> committed;
+    std::vector<const StmOpacityTransactionAttempt*> observers;
+    for (const auto& tx : history.transactions) {
+        if (tx.outcome == StmOpacityTransactionOutcome::committed) {
+            committed.push_back(&tx);
+        } else {
+            observers.push_back(&tx);
+        }
+    }
+    result.committed_transaction_count = committed.size();
+    result.observer_transaction_count = observers.size();
+    result.committed_order_search_space_upper_bound = detail::saturated_factorial(committed.size());
+    result.committed_order_search_limit = options.max_committed_orders;
+
+    auto ordering = detail::build_stm_opacity_ordering_graph(history, committed, result);
+    if (ordering.inconsistent) {
+        result.status = StmOpacityStatus::violation;
+        result.explanation = ordering.has_cycle
+            ? "STM opacity ordering graph is cyclic"
+            : "STM opacity read-from constraints are inconsistent";
+        if (!ordering.explanation.empty()) {
+            result.explanation += ": " + ordering.explanation;
+        }
+        detail::append_stm_opacity_diagnostic_context(result);
+        return result;
+    }
+
+    const auto initial_state = detail::make_initial_stm_opacity_state(history);
+    std::vector<bool> placed(committed.size(), false);
+    std::vector<const StmOpacityTransactionAttempt*> order;
+    std::vector<detail::StmOpacityState> prefix_states;
+    prefix_states.push_back(initial_state);
+    detail::StmOpacityCommittedSearchMemo memo;
+    bool completed_order_seen = false;
+    std::string first_rejection;
+
+    if (!detail::search_stm_opacity_committed_order(
+        history,
+        committed,
+        observers,
+        placed,
+        order,
+        initial_state,
+        prefix_states,
+        options,
+        ordering,
+        memo,
+        result,
+        &first_rejection,
+        &completed_order_seen
+    )) {
+        result.status = result.search_limit_exceeded
+            ? StmOpacityStatus::search_limit_exceeded
+            : StmOpacityStatus::violation;
+        result.explanation = result.search_limit_exceeded
+            ? "STM opacity committed-order search limit exceeded"
+            : "no committed serial order satisfies STM opacity";
+        if (!first_rejection.empty()) {
+            result.explanation += ": " + first_rejection;
+        }
+        detail::append_stm_opacity_diagnostic_context(result);
+        return result;
+    }
+
+    for (const auto* tx : order) {
+        result.committed_order.push_back(tx->transaction_id);
+    }
+    result.explanation = "STM opacity history is opaque";
+    result.committed_order_memo_entries = memo.failed_prefixes.size();
+    return result;
 }
 
 enum class SourceAccessKind {
@@ -2803,6 +4778,290 @@ inline std::string format_event_dependency_graph_dot(
     return out.str();
 }
 
+inline std::string format_stm_opacity_history_json(
+    const StmOpacityHistory& history,
+    const StmOpacityVerificationResult* result = nullptr
+) {
+    std::vector<std::string> location_ids;
+    location_ids.reserve(history.locations.size());
+    for (const auto& [location_id, location] : history.locations) {
+        location_ids.push_back(location_id);
+    }
+    std::sort(location_ids.begin(), location_ids.end());
+
+    std::ostringstream out;
+    out << "{\n";
+    out << "  \"lifetime_policy\": \"" << stm_lifetime_policy_name(history.lifetime_policy) << "\",\n"
+        << "  \"ignored_lifetime_anomalies\": " << history.ignored_lifetime_anomalies << ",\n"
+        << "  \"ignored_lifetime_anomaly_samples\": [";
+    for (std::size_t i = 0; i < history.ignored_lifetime_anomaly_samples.size(); ++i) {
+        if (i != 0) out << ", ";
+        out << "\"" << detail::event_dependency_json_escape(history.ignored_lifetime_anomaly_samples[i]) << "\"";
+    }
+    out << "],\n";
+    out << "  \"locations\": [\n";
+    for (std::size_t i = 0; i < location_ids.size(); ++i) {
+        const auto& location = history.locations.at(location_ids[i]);
+        out << "    {"
+            << "\"location_id\": \"" << detail::event_dependency_json_escape(location.location_id) << "\""
+            << ", \"address_id\": \"" << detail::event_dependency_json_escape(location.address_id) << "\""
+            << ", \"identity_kind\": \"" << detail::event_dependency_json_escape(location.identity_kind) << "\""
+            << ", \"location_handle_id\": \"" << detail::event_dependency_json_escape(location.location_handle_id) << "\""
+            << ", \"object_lifetime_id\": \"" << detail::event_dependency_json_escape(location.object_lifetime_id) << "\""
+            << ", \"object_lifetime_generation\": " << location.object_lifetime_generation
+            << ", \"has_object_lifetime_generation\": "
+            << (location.has_object_lifetime_generation ? "true" : "false")
+            << ", \"field_id\": \"" << detail::event_dependency_json_escape(location.field_id) << "\""
+            << ", \"generation\": " << location.generation
+            << ", \"label\": \"" << detail::event_dependency_json_escape(location.label) << "\""
+            << ", \"type_name\": \"" << detail::event_dependency_json_escape(location.type_name) << "\""
+            << ", \"has_initial_value\": " << (location.has_initial_value ? "true" : "false")
+            << ", \"initial_value\": \""
+            << detail::event_dependency_json_escape(location.has_initial_value ? location.initial_value.to_string() : "")
+            << "\""
+            << ", \"destroyed\": " << (location.destroyed ? "true" : "false")
+            << "}";
+        if (i + 1 != location_ids.size()) out << ",";
+        out << "\n";
+    }
+    out << "  ],\n";
+    out << "  \"transactions\": [\n";
+    for (std::size_t i = 0; i < history.transactions.size(); ++i) {
+        const auto& tx = history.transactions[i];
+        out << "    {\n"
+            << "      \"transaction_id\": " << tx.transaction_id << ",\n"
+            << "      \"logical_transaction_id\": " << tx.logical_transaction_id << ",\n"
+            << "      \"attempt\": " << tx.attempt << ",\n"
+            << "      \"thread_id\": " << tx.thread_id << ",\n"
+            << "      \"operation\": \""
+            << detail::event_dependency_json_escape(tx.operation ? operation_context_label(*tx.operation) : "")
+            << "\",\n"
+            << "      \"outcome\": \"" << stm_opacity_outcome_name(tx.outcome) << "\",\n"
+            << "      \"begin_event_index\": " << tx.begin_event_index << ",\n"
+            << "      \"has_end\": " << (tx.has_end ? "true" : "false") << ",\n"
+            << "      \"end_event_index\": " << tx.end_event_index << ",\n"
+            << "      \"accesses\": [\n";
+        for (std::size_t j = 0; j < tx.accesses.size(); ++j) {
+            const auto& access = tx.accesses[j];
+            out << "        {"
+                << "\"kind\": \"" << (access.write ? "write" : "read") << "\""
+                << ", \"address_id\": \"" << detail::event_dependency_json_escape(access.address_id) << "\""
+                << ", \"location_id\": \"" << detail::event_dependency_json_escape(access.location_id) << "\""
+                << ", \"identity_kind\": \"" << detail::event_dependency_json_escape(access.identity_kind) << "\""
+                << ", \"location_handle_id\": \"" << detail::event_dependency_json_escape(access.location_handle_id) << "\""
+                << ", \"object_lifetime_id\": \"" << detail::event_dependency_json_escape(access.object_lifetime_id) << "\""
+                << ", \"object_lifetime_generation\": " << access.object_lifetime_generation
+                << ", \"has_object_lifetime_generation\": "
+                << (access.has_object_lifetime_generation ? "true" : "false")
+                << ", \"field_id\": \"" << detail::event_dependency_json_escape(access.field_id) << "\""
+                << ", \"location_generation\": " << access.location_generation
+                << ", \"value\": \"" << detail::event_dependency_json_escape(access.value.to_string()) << "\""
+                << ", \"event_index\": " << access.event_index
+                << ", \"has_lock_slot\": " << (access.has_lock_slot ? "true" : "false")
+                << ", \"lock_slot\": " << access.lock_slot
+                << ", \"has_version\": " << (access.has_version ? "true" : "false")
+                << ", \"version\": " << access.version
+                << "}";
+            if (j + 1 != tx.accesses.size()) out << ",";
+            out << "\n";
+        }
+        out << "      ]\n"
+            << "    }";
+        if (i + 1 != history.transactions.size()) out << ",";
+        out << "\n";
+    }
+    out << "  ]";
+    if (result != nullptr) {
+        out << ",\n"
+            << "  \"verification\": {\n"
+            << "    \"status\": \"" << stm_opacity_status_name(result->status) << "\",\n"
+            << "    \"explanation\": \"" << detail::event_dependency_json_escape(result->explanation) << "\",\n"
+            << "    \"committed_transaction_count\": " << result->committed_transaction_count << ",\n"
+            << "    \"observer_transaction_count\": " << result->observer_transaction_count << ",\n"
+            << "    \"committed_order_search_space_upper_bound\": "
+            << result->committed_order_search_space_upper_bound << ",\n"
+            << "    \"committed_order_search_limit\": " << result->committed_order_search_limit << ",\n"
+            << "    \"search_limit_exceeded\": " << (result->search_limit_exceeded ? "true" : "false") << ",\n"
+            << "    \"committed_orders_explored\": " << result->committed_orders_explored << ",\n"
+            << "    \"committed_order_memo_entries\": " << result->committed_order_memo_entries << ",\n"
+            << "    \"committed_order_prefixes_pruned\": " << result->committed_order_prefixes_pruned << ",\n"
+            << "    \"read_from_constraints\": " << result->read_from_constraints << ",\n"
+            << "    \"ordering_graph_edges\": " << result->ordering_graph_edges << ",\n"
+            << "    \"ordering_graph_transitive_edges\": "
+            << result->ordering_graph_transitive_edges << ",\n"
+            << "    \"ordering_graph_candidate_prunes\": "
+            << result->ordering_graph_candidate_prunes << ",\n"
+            << "    \"ambiguous_read_from_constraints\": "
+            << result->ambiguous_read_from_constraints << ",\n"
+            << "    \"ambiguous_read_from_candidate_prunes\": "
+            << result->ambiguous_read_from_candidate_prunes << ",\n"
+            << "    \"ambiguous_read_from_source_before_reader_prunes\": "
+            << result->ambiguous_read_from_source_before_reader_prunes << ",\n"
+            << "    \"ambiguous_read_from_conflicting_writer_prunes\": "
+            << result->ambiguous_read_from_conflicting_writer_prunes << ",\n"
+            << "    \"ambiguous_read_from_sources_eliminated\": "
+            << result->ambiguous_read_from_sources_eliminated << ",\n"
+            << "    \"ambiguous_read_from_sources_shadowed\": "
+            << result->ambiguous_read_from_sources_shadowed << ",\n"
+            << "    \"ambiguous_read_from_initial_sources_eliminated\": "
+            << result->ambiguous_read_from_initial_sources_eliminated << ",\n"
+            << "    \"ambiguous_read_from_promoted_constraints\": "
+            << result->ambiguous_read_from_promoted_constraints << ",\n"
+            << "    \"lifetime_policy\": \"" << stm_lifetime_policy_name(result->lifetime_policy) << "\",\n"
+            << "    \"ignored_lifetime_anomalies\": "
+            << result->ignored_lifetime_anomalies << ",\n"
+            << "    \"ordering_graph_cycle\": " << (result->ordering_graph_cycle ? "true" : "false") << ",\n"
+            << "    \"observer_checks\": " << result->observer_checks << ",\n"
+            << "    \"read_from_witnesses\": [";
+        for (std::size_t i = 0; i < result->read_from_witnesses.size(); ++i) {
+            if (i != 0) out << ", ";
+            out << "\"" << detail::event_dependency_json_escape(result->read_from_witnesses[i]) << "\"";
+        }
+        out << "],\n"
+            << "    \"ambiguous_read_from_samples\": [";
+        for (std::size_t i = 0; i < result->ambiguous_read_from_samples.size(); ++i) {
+            if (i != 0) out << ", ";
+            out << "\"" << detail::event_dependency_json_escape(result->ambiguous_read_from_samples[i]) << "\"";
+        }
+        out << "],\n"
+            << "    \"ordering_graph_samples\": [";
+        for (std::size_t i = 0; i < result->ordering_graph_samples.size(); ++i) {
+            if (i != 0) out << ", ";
+            out << "\"" << detail::event_dependency_json_escape(result->ordering_graph_samples[i]) << "\"";
+        }
+        out << "],\n"
+            << "    \"rejected_prefix_samples\": [";
+        for (std::size_t i = 0; i < result->rejected_prefix_samples.size(); ++i) {
+            if (i != 0) out << ", ";
+            out << "\"" << detail::event_dependency_json_escape(result->rejected_prefix_samples[i]) << "\"";
+        }
+        out << "],\n"
+            << "    \"ignored_lifetime_anomaly_samples\": [";
+        for (std::size_t i = 0; i < result->ignored_lifetime_anomaly_samples.size(); ++i) {
+            if (i != 0) out << ", ";
+            out << "\"" << detail::event_dependency_json_escape(result->ignored_lifetime_anomaly_samples[i]) << "\"";
+        }
+        out << "],\n"
+            << "    \"committed_order\": [";
+        for (std::size_t i = 0; i < result->committed_order.size(); ++i) {
+            if (i != 0) out << ", ";
+            out << result->committed_order[i];
+        }
+        out << "]\n"
+            << "  }";
+    }
+    out << "\n}\n";
+    return out.str();
+}
+
+inline std::string format_stm_opacity_history_dot(
+    const StmOpacityHistory& history,
+    const StmOpacityVerificationResult* result = nullptr,
+    std::string_view graph_name = "stm_opacity"
+) {
+    std::vector<std::string> location_ids;
+    location_ids.reserve(history.locations.size());
+    for (const auto& [location_id, location] : history.locations) {
+        location_ids.push_back(location_id);
+    }
+    std::sort(location_ids.begin(), location_ids.end());
+
+    std::ostringstream out;
+    out << "digraph " << detail::event_dependency_dot_graph_name(graph_name) << " {\n";
+    out << "  rankdir=LR;\n";
+    out << "  node [shape=box];\n";
+    out << "  graph [label=\"lifetime_policy="
+        << detail::event_dependency_dot_escape(stm_lifetime_policy_name(history.lifetime_policy))
+        << "\\nignored_lifetime_anomalies=" << history.ignored_lifetime_anomalies
+        << "\",labelloc=t];\n";
+    for (std::size_t i = 0; i < location_ids.size(); ++i) {
+        const auto& location = history.locations.at(location_ids[i]);
+        std::ostringstream label;
+        label << location.location_id;
+        if (!location.address_id.empty()) label << "\naddress=" << location.address_id;
+        if (!location.identity_kind.empty()) label << "\nidentity=" << location.identity_kind;
+        if (!location.location_handle_id.empty()) label << "\nhandle=" << location.location_handle_id;
+        if (!location.object_lifetime_id.empty()) label << "\nobject_lifetime=" << location.object_lifetime_id;
+        if (location.has_object_lifetime_generation) {
+            label << "\nobject_generation=" << location.object_lifetime_generation;
+        }
+        if (!location.field_id.empty()) label << "\nfield=" << location.field_id;
+        label << "\ngeneration=" << location.generation;
+        if (!location.label.empty()) label << "\nlabel=" << location.label;
+        if (!location.type_name.empty()) label << "\ntype=" << location.type_name;
+        if (location.has_initial_value) label << "\ninitial=" << location.initial_value.to_string();
+        if (location.destroyed) label << "\ndestroyed=true";
+        out << "  loc" << i
+            << " [shape=ellipse,label=\"" << detail::event_dependency_dot_escape(label.str()) << "\"];\n";
+    }
+    for (std::size_t i = 0; i < history.transactions.size(); ++i) {
+        const auto& tx = history.transactions[i];
+        std::ostringstream label;
+        label << detail::stm_opacity_tx_label(tx)
+              << "\noutcome=" << stm_opacity_outcome_name(tx.outcome)
+              << "\ninterval=" << tx.begin_event_index << "..";
+        if (tx.has_end) label << tx.end_event_index;
+        else label << "live";
+        out << "  tx" << i
+            << " [label=\"" << detail::event_dependency_dot_escape(label.str()) << "\"];\n";
+    }
+    for (std::size_t tx_index = 0; tx_index < history.transactions.size(); ++tx_index) {
+        const auto& tx = history.transactions[tx_index];
+        for (const auto& access : tx.accesses) {
+            const auto location = std::find(location_ids.begin(), location_ids.end(), access.location_id);
+            if (location == location_ids.end()) continue;
+            const auto location_index = static_cast<std::size_t>(std::distance(location_ids.begin(), location));
+            std::ostringstream label;
+            label << (access.write ? "write" : "read")
+                  << "\naddress=" << access.address_id;
+            if (!access.identity_kind.empty()) label << "\nidentity=" << access.identity_kind;
+            if (!access.location_handle_id.empty()) label << "\nhandle=" << access.location_handle_id;
+            if (!access.object_lifetime_id.empty()) label << "\nobject_lifetime=" << access.object_lifetime_id;
+            if (access.has_object_lifetime_generation) {
+                label << "\nobject_generation=" << access.object_lifetime_generation;
+            }
+            if (!access.field_id.empty()) label << "\nfield=" << access.field_id;
+            label
+                  << "\nvalue=" << access.value.to_string()
+                  << "\ngeneration=" << access.location_generation
+                  << "\nevent=" << access.event_index;
+            out << "  tx" << tx_index << " -> loc" << location_index
+                << " [label=\"" << detail::event_dependency_dot_escape(label.str()) << "\"];\n";
+        }
+    }
+    if (result != nullptr && !result->committed_order.empty()) {
+        out << "  opacity_result [shape=note,label=\"status="
+            << detail::event_dependency_dot_escape(stm_opacity_status_name(result->status))
+            << "\\ncommitted_orders_explored=" << result->committed_orders_explored
+            << "\\nmemo_entries=" << result->committed_order_memo_entries
+            << "\\npruned_prefixes=" << result->committed_order_prefixes_pruned
+            << "\\nread_from_constraints=" << result->read_from_constraints
+            << "\\nordering_edges=" << result->ordering_graph_edges
+            << "\\nordering_candidate_prunes=" << result->ordering_graph_candidate_prunes
+            << "\\nambiguous_read_from_constraints=" << result->ambiguous_read_from_constraints
+            << "\\nambiguous_read_from_prunes=" << result->ambiguous_read_from_candidate_prunes
+            << "\\nambiguous_source_before_reader_prunes="
+            << result->ambiguous_read_from_source_before_reader_prunes
+            << "\\nambiguous_conflicting_writer_prunes="
+            << result->ambiguous_read_from_conflicting_writer_prunes
+            << "\\nambiguous_sources_eliminated="
+            << result->ambiguous_read_from_sources_eliminated
+            << "\\nambiguous_sources_shadowed="
+            << result->ambiguous_read_from_sources_shadowed
+            << "\\nambiguous_initial_sources_eliminated="
+            << result->ambiguous_read_from_initial_sources_eliminated
+            << "\\nambiguous_promoted_constraints="
+            << result->ambiguous_read_from_promoted_constraints
+            << "\\nlifetime_policy="
+            << detail::event_dependency_dot_escape(stm_lifetime_policy_name(result->lifetime_policy))
+            << "\\nignored_lifetime_anomalies=" << result->ignored_lifetime_anomalies
+            << "\\nobserver_checks=" << result->observer_checks
+            << "\"];\n";
+    }
+    out << "}\n";
+    return out.str();
+}
+
 inline EventDependencyAnalysis analyze_event_dependency_graph(const EventDependencyGraph& graph) {
     EventDependencyAnalysis analysis;
     if (graph.nodes.empty()) {
@@ -3043,6 +5302,7 @@ inline void add_cross_stream_dependency_edges(EventDependencyGraph& graph) {
 }
 
 inline std::string stm_dependency_resource_id(const StmEventRecord& record) {
+    if (!record.location_handle_id.empty()) return record.location_handle_id;
     if (!record.address_id.empty()) return record.address_id;
     if (record.has_lock_slot) return "lock_slot#" + std::to_string(record.lock_slot);
     if (record.transaction_id != 0) return "tx#" + std::to_string(record.transaction_id);
@@ -3181,6 +5441,7 @@ enum class FailureKind {
     none,
     invalid_results,
     validation_failure,
+    opacity_violation,
     unexpected_exception,
     deadlock,
     livelock,
@@ -3193,6 +5454,7 @@ inline const char* failure_kind_name(FailureKind kind) {
         case FailureKind::none: return "none";
         case FailureKind::invalid_results: return "invalid_results";
         case FailureKind::validation_failure: return "validation_failure";
+        case FailureKind::opacity_violation: return "opacity_violation";
         case FailureKind::unexpected_exception: return "unexpected_exception";
         case FailureKind::deadlock: return "deadlock";
         case FailureKind::livelock: return "livelock";
@@ -3214,6 +5476,10 @@ struct CheckResult {
     std::string trace;
     std::string state_representation;
     std::string verifier_explanation;
+    bool opacity_checked = false;
+    StmOpacityHistory opacity_history;
+    StmOpacityVerificationResult opacity_result;
+    std::string opacity_explanation;
     std::exception_ptr exception;
     std::vector<std::string> warnings;
     std::vector<TraceEventRecord> trace_events;
@@ -3251,6 +5517,41 @@ inline void refresh_event_dependencies(CheckResult& result) {
     );
     result.event_dependency_analysis = analyze_event_dependency_graph(result.event_dependencies);
     result.operation_dependency_footprints = build_operation_dependency_footprints(result.event_dependencies);
+}
+
+inline bool apply_stm_opacity_check(
+    CheckResult& result,
+    StmOpacityVerificationOptions options = {},
+    StmOpacityHistoryBuildOptions build_options = {}
+) {
+    result.opacity_checked = true;
+    auto history = build_stm_opacity_history(result.stm_events, build_options);
+    result.opacity_history = std::move(history.history);
+    if (!history.success()) {
+        result.opacity_result = {};
+        result.opacity_result.status = history.status;
+        result.opacity_result.explanation = history.explanation;
+        result.opacity_result.lifetime_policy = history.lifetime_policy;
+        result.opacity_result.ignored_lifetime_anomalies = history.ignored_lifetime_anomalies;
+        result.opacity_result.ignored_lifetime_anomaly_samples = history.ignored_lifetime_anomaly_samples;
+        result.opacity_explanation = history.explanation;
+        result.success = false;
+        result.failure = FailureKind::opacity_violation;
+        result.message = "malformed STM opacity history";
+        return false;
+    }
+
+    result.opacity_result = verify_stm_opacity(result.opacity_history, options);
+    result.opacity_explanation = result.opacity_result.explanation;
+    if (!result.opacity_result.success()) {
+        result.success = false;
+        result.failure = FailureKind::opacity_violation;
+        result.message = result.opacity_result.status == StmOpacityStatus::search_limit_exceeded
+            ? "STM opacity search limit exceeded"
+            : "STM opacity violation";
+        return false;
+    }
+    return true;
 }
 
 inline std::string trim_ascii_whitespace(std::string text) {
@@ -4157,7 +6458,365 @@ private:
 
 namespace stm {
 
+struct ObjectLifetimeHandle {
+    std::string id;
+    const void* address = nullptr;
+    std::size_t generation = 0;
+    bool has_generation = false;
+
+    explicit operator bool() const noexcept {
+        return !id.empty();
+    }
+};
+
+struct LocationHandle {
+    std::string id;
+    ObjectLifetimeHandle object;
+    const void* address = nullptr;
+    std::string field_id;
+    std::string label;
+    std::string type_name;
+
+    explicit operator bool() const noexcept {
+        return !id.empty();
+    }
+};
+
+namespace detail {
+
+inline std::string next_object_lifetime_id() {
+    static std::atomic<std::uint64_t> next_id{1};
+    return "objlife#" + std::to_string(next_id.fetch_add(1, std::memory_order_seq_cst));
+}
+
+inline std::size_t next_object_lifetime_generation(const void* address) {
+    if (address == nullptr) return 0;
+    static std::mutex mutex;
+    static std::unordered_map<const void*, std::size_t> next_generation_by_address;
+
+    std::lock_guard lock(mutex);
+    auto& next_generation = next_generation_by_address[address];
+    return next_generation++;
+}
+
+inline std::string location_handle_id(const ObjectLifetimeHandle& object, std::string_view field_id) {
+    if (!object.id.empty()) {
+        return object.id + "." + (field_id.empty() ? std::string("field") : std::string(field_id));
+    }
+    return "location#" + next_object_lifetime_id();
+}
+
+inline std::string backend_identity_component(std::string_view value) {
+    std::string result;
+    result.reserve(value.size());
+    for (const unsigned char ch : value) {
+        if (std::isalnum(ch) != 0 || ch == '_' || ch == '-' || ch == '.' || ch == '#') {
+            result.push_back(static_cast<char>(ch));
+        } else {
+            result.push_back('_');
+        }
+    }
+    return result.empty() ? std::string("unknown") : result;
+}
+
+} // namespace detail
+
+inline ObjectLifetimeHandle make_object_lifetime_handle(const void* owner_address) {
+    return ObjectLifetimeHandle{
+        .id = detail::next_object_lifetime_id(),
+        .address = owner_address,
+        .generation = detail::next_object_lifetime_generation(owner_address),
+        .has_generation = owner_address != nullptr
+    };
+}
+
+struct BackendObjectLifetimeOptions {
+    std::string backend_name = "backend";
+    std::string allocation_id;
+    const void* allocation_token = nullptr;
+    const void* object_address = nullptr;
+    std::optional<std::size_t> generation = std::nullopt;
+};
+
+struct BackendLocationHandleOptions {
+    BackendObjectLifetimeOptions object;
+    const void* field_address = nullptr;
+    std::string field_id = "self";
+    std::string label;
+    std::string type_name;
+};
+
+inline ObjectLifetimeHandle make_backend_object_lifetime_handle(BackendObjectLifetimeOptions options) {
+    std::string allocation_id = std::move(options.allocation_id);
+    if (allocation_id.empty() && options.allocation_token != nullptr) {
+        allocation_id = stable_object_id(options.allocation_token);
+    }
+    if (allocation_id.empty() && options.object_address != nullptr) {
+        allocation_id = stable_object_id(options.object_address);
+    }
+    if (allocation_id.empty()) {
+        allocation_id = detail::next_object_lifetime_id();
+    }
+
+    const auto generation_suffix = options.generation
+        ? "#gen" + std::to_string(*options.generation)
+        : std::string{};
+    return ObjectLifetimeHandle{
+        .id = "backend#" + detail::backend_identity_component(options.backend_name) +
+            "#" + detail::backend_identity_component(allocation_id) + generation_suffix,
+        .address = options.object_address,
+        .generation = options.generation.value_or(0),
+        .has_generation = options.generation.has_value()
+    };
+}
+
+inline ObjectLifetimeHandle make_backend_object_lifetime_handle(
+    std::string backend_name,
+    std::string allocation_id,
+    const void* object_address = nullptr,
+    std::optional<std::size_t> generation = std::nullopt
+) {
+    return make_backend_object_lifetime_handle(BackendObjectLifetimeOptions{
+        .backend_name = std::move(backend_name),
+        .allocation_id = std::move(allocation_id),
+        .object_address = object_address,
+        .generation = generation
+    });
+}
+
+inline ObjectLifetimeHandle make_backend_object_lifetime_handle(
+    std::string backend_name,
+    const char* allocation_id,
+    const void* object_address = nullptr,
+    std::optional<std::size_t> generation = std::nullopt
+) {
+    return make_backend_object_lifetime_handle(
+        std::move(backend_name),
+        allocation_id == nullptr ? std::string{} : std::string(allocation_id),
+        object_address,
+        generation
+    );
+}
+
+inline ObjectLifetimeHandle make_backend_object_lifetime_handle(
+    std::string backend_name,
+    const void* allocation_token,
+    const void* object_address = nullptr,
+    std::optional<std::size_t> generation = std::nullopt
+) {
+    return make_backend_object_lifetime_handle(BackendObjectLifetimeOptions{
+        .backend_name = std::move(backend_name),
+        .allocation_id = {},
+        .allocation_token = allocation_token,
+        .object_address = object_address,
+        .generation = generation
+    });
+}
+
+inline LocationHandle make_location_handle(
+    ObjectLifetimeHandle object,
+    const void* field_address,
+    std::string field_id,
+    std::string label = {},
+    std::string type_name = {}
+) {
+    if (label.empty()) label = field_id;
+    return LocationHandle{
+        .id = detail::location_handle_id(object, field_id),
+        .object = std::move(object),
+        .address = field_address,
+        .field_id = std::move(field_id),
+        .label = std::move(label),
+        .type_name = std::move(type_name)
+    };
+}
+
+inline LocationHandle make_backend_location_handle(BackendLocationHandleOptions options) {
+    return make_location_handle(
+        make_backend_object_lifetime_handle(std::move(options.object)),
+        options.field_address,
+        std::move(options.field_id),
+        std::move(options.label),
+        std::move(options.type_name)
+    );
+}
+
+inline LocationHandle make_backend_location_handle(
+    std::string backend_name,
+    std::string allocation_id,
+    const void* field_address,
+    std::string field_id,
+    std::string label = {},
+    std::string type_name = {},
+    std::optional<std::size_t> generation = std::nullopt,
+    const void* object_address = nullptr
+) {
+    return make_backend_location_handle(BackendLocationHandleOptions{
+        .object = BackendObjectLifetimeOptions{
+            .backend_name = std::move(backend_name),
+            .allocation_id = std::move(allocation_id),
+            .object_address = object_address,
+            .generation = generation
+        },
+        .field_address = field_address,
+        .field_id = std::move(field_id),
+        .label = std::move(label),
+        .type_name = std::move(type_name)
+    });
+}
+
+inline LocationHandle make_backend_location_handle(
+    std::string backend_name,
+    const char* allocation_id,
+    const void* field_address,
+    std::string field_id,
+    std::string label = {},
+    std::string type_name = {},
+    std::optional<std::size_t> generation = std::nullopt,
+    const void* object_address = nullptr
+) {
+    return make_backend_location_handle(
+        std::move(backend_name),
+        allocation_id == nullptr ? std::string{} : std::string(allocation_id),
+        field_address,
+        std::move(field_id),
+        std::move(label),
+        std::move(type_name),
+        generation,
+        object_address
+    );
+}
+
+inline LocationHandle make_backend_location_handle(
+    std::string backend_name,
+    const void* allocation_token,
+    const void* field_address,
+    std::string field_id,
+    std::string label = {},
+    std::string type_name = {},
+    std::optional<std::size_t> generation = std::nullopt,
+    const void* object_address = nullptr
+) {
+    return make_backend_location_handle(BackendLocationHandleOptions{
+        .object = BackendObjectLifetimeOptions{
+            .backend_name = std::move(backend_name),
+            .allocation_id = {},
+            .allocation_token = allocation_token,
+            .object_address = object_address,
+            .generation = generation
+        },
+        .field_address = field_address,
+        .field_id = std::move(field_id),
+        .label = std::move(label),
+        .type_name = std::move(type_name)
+    });
+}
+
+inline LocationHandle make_standalone_location_handle(
+    const void* field_address,
+    std::string label = "self",
+    std::string type_name = {}
+) {
+    auto object = make_object_lifetime_handle(field_address);
+    return make_location_handle(std::move(object), field_address, "self", std::move(label), std::move(type_name));
+}
+
+class BackendLocationRegistry {
+public:
+    explicit BackendLocationRegistry(std::string backend_name)
+        : backend_name_(std::move(backend_name)) {}
+
+    LocationHandle get_or_create_location(
+        const void* allocation_token,
+        const void* field_address,
+        std::string field_id,
+        std::string label = {},
+        std::string type_name = {}
+    ) {
+        const void* key = allocation_token != nullptr ? allocation_token : field_address;
+        std::lock_guard lock(mutex_);
+        auto active = locations_by_token_.find(key);
+        if (active != locations_by_token_.end()) {
+            if (!label.empty()) active->second.label = std::move(label);
+            if (!type_name.empty()) active->second.type_name = std::move(type_name);
+            return active->second;
+        }
+
+        const auto generation = next_generation_by_token_[key];
+        auto location = make_backend_location_handle(
+            backend_name_,
+            key,
+            field_address,
+            std::move(field_id),
+            std::move(label),
+            std::move(type_name),
+            generation,
+            key
+        );
+        locations_by_token_.insert_or_assign(key, location);
+        return location;
+    }
+
+    LocationHandle get_or_create_self_location(
+        const void* allocation_token,
+        const void* field_address,
+        std::string label = "self",
+        std::string type_name = {}
+    ) {
+        return get_or_create_location(
+            allocation_token,
+            field_address,
+            "self",
+            std::move(label),
+            std::move(type_name)
+        );
+    }
+
+    std::optional<LocationHandle> destroy_location(const void* allocation_token, const void* field_address) {
+        const void* key = allocation_token != nullptr ? allocation_token : field_address;
+        std::lock_guard lock(mutex_);
+        auto active = locations_by_token_.find(key);
+        if (active == locations_by_token_.end()) return std::nullopt;
+
+        auto location = active->second;
+        locations_by_token_.erase(active);
+        next_generation_by_token_[key] = location.object.generation + 1;
+        return location;
+    }
+
+    std::optional<LocationHandle> destroy_location(const void* allocation_token) {
+        return destroy_location(allocation_token, nullptr);
+    }
+
+private:
+    std::string backend_name_;
+    std::mutex mutex_;
+    std::unordered_map<const void*, LocationHandle> locations_by_token_;
+    std::unordered_map<const void*, std::size_t> next_generation_by_token_;
+};
+
+template <typename Derived>
+class tx_object {
+public:
+    tx_object() : object_handle_(make_object_lifetime_handle(static_cast<const void*>(this))) {}
+
+    tx_object(const tx_object&) = delete;
+    tx_object& operator=(const tx_object&) = delete;
+    tx_object(tx_object&&) = delete;
+    tx_object& operator=(tx_object&&) = delete;
+
+    const ObjectLifetimeHandle& lc_object_handle() const noexcept {
+        return object_handle_;
+    }
+
+private:
+    ObjectLifetimeHandle object_handle_;
+};
+
 enum class EventKind {
+    tx_location_init,
+    tx_location_register,
+    tx_location_destroy,
     tx_begin,
     tx_read,
     tx_write,
@@ -4170,13 +6829,16 @@ enum class EventKind {
     tx_commit_attempt,
     tx_commit_success,
     tx_abort,
-    tx_retry
+    tx_retry,
+    tx_attempt_metadata
 };
 
 struct Event {
     EventKind kind = EventKind::tx_begin;
     bool read_only = false;
     const void* address = nullptr;
+    LocationHandle location;
+    bool has_location_handle = false;
     std::uint64_t lock_slot = 0;
     bool has_lock_slot = false;
     std::uint64_t version = 0;
@@ -4188,10 +6850,19 @@ struct Event {
     std::string reason;
     std::uint64_t transaction_id = 0;
     int transaction_depth = 0;
+    std::uint64_t logical_transaction_id = 0;
+    std::string label;
+    std::string type_name;
+    Value value;
+    bool has_value = false;
+    bool value_supported = true;
 };
 
 inline const char* event_name(EventKind kind) {
     switch (kind) {
+        case EventKind::tx_location_init: return "tx_location_init";
+        case EventKind::tx_location_register: return "tx_location_register";
+        case EventKind::tx_location_destroy: return "tx_location_destroy";
         case EventKind::tx_begin: return "tx_begin";
         case EventKind::tx_read: return "tx_read";
         case EventKind::tx_write: return "tx_write";
@@ -4205,12 +6876,16 @@ inline const char* event_name(EventKind kind) {
         case EventKind::tx_commit_success: return "tx_commit_success";
         case EventKind::tx_abort: return "tx_abort";
         case EventKind::tx_retry: return "tx_retry";
+        case EventKind::tx_attempt_metadata: return "tx_attempt_metadata";
     }
     return "tx_unknown";
 }
 
 inline const char* switch_location(EventKind kind) {
     switch (kind) {
+        case EventKind::tx_location_init: return "stm.tx_location_init";
+        case EventKind::tx_location_register: return "stm.tx_location_register";
+        case EventKind::tx_location_destroy: return "stm.tx_location_destroy";
         case EventKind::tx_begin: return "stm.tx_begin";
         case EventKind::tx_read: return "stm.tx_read";
         case EventKind::tx_write: return "stm.tx_write";
@@ -4224,6 +6899,7 @@ inline const char* switch_location(EventKind kind) {
         case EventKind::tx_commit_success: return "stm.tx_commit_success";
         case EventKind::tx_abort: return "stm.tx_abort";
         case EventKind::tx_retry: return "stm.tx_retry";
+        case EventKind::tx_attempt_metadata: return "stm.tx_attempt_metadata";
     }
     return "stm.tx_unknown";
 }
@@ -4236,6 +6912,18 @@ inline std::string to_string(const Event& event) {
     }
     if (event.address != nullptr) {
         out << " address=" << stable_object_id(event.address);
+    }
+    if (event.has_location_handle) {
+        out << " location_handle=" << event.location.id;
+        if (!event.location.object.id.empty()) {
+            out << " object_lifetime=" << event.location.object.id;
+        }
+        if (event.location.object.has_generation) {
+            out << " object_generation=" << event.location.object.generation;
+        }
+        if (!event.location.field_id.empty()) {
+            out << " field=" << event.location.field_id;
+        }
     }
     if (event.has_lock_slot) {
         out << " lock_slot=" << event.lock_slot;
@@ -4261,13 +6949,45 @@ inline std::string to_string(const Event& event) {
     if (event.transaction_depth != 0) {
         out << " tx_depth=" << event.transaction_depth;
     }
+    if (event.logical_transaction_id != 0) {
+        out << " logical_tx_id=" << event.logical_transaction_id;
+    }
+    if (!event.label.empty()) {
+        out << " label=" << event.label;
+    }
+    if (!event.type_name.empty()) {
+        out << " type=" << event.type_name;
+    }
+    if (event.has_value) {
+        out << " value=" << event.value.to_string();
+    } else if (!event.value_supported) {
+        out << " value=<unsupported>";
+    }
     return out.str();
 }
 
 void emit(const Event& event);
+template <typename T>
+void tx_location_init(const void* address, const T& value);
+template <typename T>
+void tx_location_init(const LocationHandle& location, const T& value);
+void tx_location_register(const void* address, std::string label = {}, std::string type_name = {});
+void tx_location_register(const LocationHandle& location, std::string label = {}, std::string type_name = {});
+void tx_location_destroy(const void* address);
+void tx_location_destroy(const LocationHandle& location);
 void tx_begin(bool read_only, std::uint64_t start_clock_or_version = 0);
 void tx_read(const void* address, std::uint64_t lock_slot = 0, std::uint64_t version = 0);
+void tx_read(const LocationHandle& location, std::uint64_t lock_slot = 0, std::uint64_t version = 0);
 void tx_write(const void* address, std::uint64_t lock_slot = 0);
+void tx_write(const LocationHandle& location, std::uint64_t lock_slot = 0);
+template <typename T>
+void tx_read_value(const void* address, const T& value, std::uint64_t lock_slot = 0, std::uint64_t version = 0);
+template <typename T>
+void tx_read_value(const LocationHandle& location, const T& value, std::uint64_t lock_slot = 0, std::uint64_t version = 0);
+template <typename T>
+void tx_write_value(const void* address, const T& value, std::uint64_t lock_slot = 0);
+template <typename T>
+void tx_write_value(const LocationHandle& location, const T& value, std::uint64_t lock_slot = 0);
 void tx_validate_begin();
 void tx_validate_end(bool success);
 void tx_lock_attempt(std::uint64_t lock_slot);
@@ -4278,6 +6998,7 @@ void tx_commit_attempt();
 void tx_commit_success(std::uint64_t commit_clock = 0);
 void tx_abort(std::string reason = {});
 void tx_retry(std::string reason = {}, int attempt = 0);
+void tx_attempt_metadata(std::uint64_t logical_transaction_id, int attempt);
 
 } // namespace stm
 
@@ -4302,6 +7023,16 @@ inline StmEventRecord make_stm_event_record(
     if (event.address != nullptr) {
         record.address_id = stable_object_id(event.address);
     }
+    if (event.has_location_handle) {
+        record.location_handle_id = event.location.id;
+        record.object_lifetime_id = event.location.object.id;
+        record.object_lifetime_generation = event.location.object.generation;
+        record.has_object_lifetime_generation = event.location.object.has_generation;
+        record.field_id = event.location.field_id;
+        if (record.address_id.empty() && event.location.address != nullptr) {
+            record.address_id = stable_object_id(event.location.address);
+        }
+    }
     if (event.kind == stm::EventKind::tx_begin) {
         record.read_only = event.read_only;
         record.has_read_only = true;
@@ -4320,6 +7051,12 @@ inline StmEventRecord make_stm_event_record(
     record.reason = event.reason;
     record.transaction_id = event.transaction_id;
     record.transaction_depth = event.transaction_depth;
+    record.logical_transaction_id = event.logical_transaction_id;
+    record.label = event.label;
+    record.type_name = event.type_name;
+    record.value = event.value;
+    record.has_value = event.has_value;
+    record.value_supported = event.value_supported;
     return record;
 }
 
@@ -4792,22 +7529,54 @@ struct TransactionContext {
     std::uint64_t next_id = 1;
     std::uint64_t current_id = 0;
     std::uint64_t last_aborted_id = 0;
+    std::uint64_t logical_transaction_id = 0;
+    std::uint64_t last_aborted_logical_transaction_id = 0;
     int depth = 0;
     int last_aborted_depth = 0;
+    int attempt = 0;
+    int last_aborted_attempt = 0;
 };
 
 inline thread_local TransactionContext transaction_context;
 
 inline void attach_current_transaction(Event& event) {
-    if (transaction_context.current_id == 0) return;
-    event.transaction_id = transaction_context.current_id;
-    event.transaction_depth = transaction_context.depth;
+    if (transaction_context.current_id != 0) {
+        event.transaction_id = transaction_context.current_id;
+        event.transaction_depth = transaction_context.depth;
+    }
+    if (transaction_context.logical_transaction_id != 0) {
+        event.logical_transaction_id = transaction_context.logical_transaction_id;
+    }
+    if (event.attempt == 0 && transaction_context.attempt != 0) {
+        event.attempt = transaction_context.attempt;
+    }
+}
+
+inline void attach_location_handle(Event& event, const LocationHandle& location) {
+    event.location = location;
+    event.has_location_handle = true;
+    if (event.address == nullptr) {
+        event.address = location.address != nullptr ? location.address : location.object.address;
+    }
+    if (event.label.empty()) {
+        event.label = location.label;
+    }
+    if (event.type_name.empty()) {
+        event.type_name = location.type_name;
+    }
 }
 
 inline void attach_last_aborted_transaction(Event& event) {
-    if (transaction_context.last_aborted_id == 0) return;
-    event.transaction_id = transaction_context.last_aborted_id;
-    event.transaction_depth = transaction_context.last_aborted_depth;
+    if (transaction_context.last_aborted_id != 0) {
+        event.transaction_id = transaction_context.last_aborted_id;
+        event.transaction_depth = transaction_context.last_aborted_depth;
+    }
+    if (transaction_context.last_aborted_logical_transaction_id != 0) {
+        event.logical_transaction_id = transaction_context.last_aborted_logical_transaction_id;
+    }
+    if (event.attempt == 0 && transaction_context.last_aborted_attempt != 0) {
+        event.attempt = transaction_context.last_aborted_attempt;
+    }
 }
 
 inline void emit(const Event& event) {
@@ -4816,9 +7585,87 @@ inline void emit(const Event& event) {
     }
 }
 
+template <typename T>
+inline void attach_value(Event& event, const T& value) {
+    using D = std::decay_t<T>;
+    if (event.type_name.empty()) {
+        event.type_name = typeid(D).name();
+    }
+    if constexpr (std::is_constructible_v<Value, const T&>) {
+        event.value = Value(value);
+        event.has_value = true;
+        event.value_supported = true;
+    } else {
+        event.value_supported = false;
+        emit_warning(
+            "STM value hook observed an unsupported value type " +
+            event.type_name +
+            "; opacity checking cannot use this event value"
+        );
+    }
+}
+
+template <typename T>
+inline void tx_location_init(const void* address, const T& value) {
+    Event event;
+    event.kind = EventKind::tx_location_init;
+    event.address = address;
+    attach_value(event, value);
+    attach_current_transaction(event);
+    emit(event);
+}
+
+template <typename T>
+inline void tx_location_init(const LocationHandle& location, const T& value) {
+    Event event;
+    event.kind = EventKind::tx_location_init;
+    attach_location_handle(event, location);
+    attach_value(event, value);
+    attach_current_transaction(event);
+    emit(event);
+}
+
+inline void tx_location_register(const void* address, std::string label, std::string type_name) {
+    Event event;
+    event.kind = EventKind::tx_location_register;
+    event.address = address;
+    event.label = std::move(label);
+    event.type_name = std::move(type_name);
+    attach_current_transaction(event);
+    emit(event);
+}
+
+inline void tx_location_register(const LocationHandle& location, std::string label, std::string type_name) {
+    Event event;
+    event.kind = EventKind::tx_location_register;
+    attach_location_handle(event, location);
+    if (!label.empty()) event.label = std::move(label);
+    if (!type_name.empty()) event.type_name = std::move(type_name);
+    attach_current_transaction(event);
+    emit(event);
+}
+
+inline void tx_location_destroy(const void* address) {
+    Event event;
+    event.kind = EventKind::tx_location_destroy;
+    event.address = address;
+    attach_current_transaction(event);
+    emit(event);
+}
+
+inline void tx_location_destroy(const LocationHandle& location) {
+    Event event;
+    event.kind = EventKind::tx_location_destroy;
+    attach_location_handle(event, location);
+    attach_current_transaction(event);
+    emit(event);
+}
+
 inline void tx_begin(bool read_only, std::uint64_t start_clock_or_version) {
     transaction_context.last_aborted_id = 0;
     transaction_context.last_aborted_depth = 0;
+    transaction_context.last_aborted_logical_transaction_id = 0;
+    transaction_context.last_aborted_attempt = 0;
     if (transaction_context.current_id == 0) {
         transaction_context.current_id = transaction_context.next_id++;
         transaction_context.depth = 1;
@@ -4835,6 +7682,18 @@ inline void tx_begin(bool read_only, std::uint64_t start_clock_or_version) {
     emit(event);
 }
 
+inline void tx_attempt_metadata(std::uint64_t logical_transaction_id, int attempt) {
+    transaction_context.logical_transaction_id = logical_transaction_id;
+    transaction_context.attempt = attempt;
+
+    Event event;
+    event.kind = EventKind::tx_attempt_metadata;
+    event.logical_transaction_id = logical_transaction_id;
+    event.attempt = attempt;
+    attach_current_transaction(event);
+    emit(event);
+}
+
 inline void tx_read(const void* address, std::uint64_t lock_slot, std::uint64_t version) {
     Event event;
     event.kind = EventKind::tx_read;
@@ -4843,6 +7702,46 @@ inline void tx_read(const void* address, std::uint64_t lock_slot, std::uint64_t 
     event.has_lock_slot = true;
     event.version = version;
     event.has_version = true;
+    attach_current_transaction(event);
+    emit(event);
+}
+
+inline void tx_read(const LocationHandle& location, std::uint64_t lock_slot, std::uint64_t version) {
+    Event event;
+    event.kind = EventKind::tx_read;
+    attach_location_handle(event, location);
+    event.lock_slot = lock_slot;
+    event.has_lock_slot = true;
+    event.version = version;
+    event.has_version = true;
+    attach_current_transaction(event);
+    emit(event);
+}
+
+template <typename T>
+inline void tx_read_value(const void* address, const T& value, std::uint64_t lock_slot, std::uint64_t version) {
+    Event event;
+    event.kind = EventKind::tx_read;
+    event.address = address;
+    event.lock_slot = lock_slot;
+    event.has_lock_slot = true;
+    event.version = version;
+    event.has_version = true;
+    attach_value(event, value);
+    attach_current_transaction(event);
+    emit(event);
+}
+
+template <typename T>
+inline void tx_read_value(const LocationHandle& location, const T& value, std::uint64_t lock_slot, std::uint64_t version) {
+    Event event;
+    event.kind = EventKind::tx_read;
+    attach_location_handle(event, location);
+    event.lock_slot = lock_slot;
+    event.has_lock_slot = true;
+    event.version = version;
+    event.has_version = true;
+    attach_value(event, value);
     attach_current_transaction(event);
     emit(event);
 }
@@ -4856,6 +7755,133 @@ inline void tx_write(const void* address, std::uint64_t lock_slot) {
     attach_current_transaction(event);
     emit(event);
 }
+
+inline void tx_write(const LocationHandle& location, std::uint64_t lock_slot) {
+    Event event;
+    event.kind = EventKind::tx_write;
+    attach_location_handle(event, location);
+    event.lock_slot = lock_slot;
+    event.has_lock_slot = true;
+    attach_current_transaction(event);
+    emit(event);
+}
+
+template <typename T>
+inline void tx_write_value(const void* address, const T& value, std::uint64_t lock_slot) {
+    Event event;
+    event.kind = EventKind::tx_write;
+    event.address = address;
+    event.lock_slot = lock_slot;
+    event.has_lock_slot = true;
+    attach_value(event, value);
+    attach_current_transaction(event);
+    emit(event);
+}
+
+template <typename T>
+inline void tx_write_value(const LocationHandle& location, const T& value, std::uint64_t lock_slot) {
+    Event event;
+    event.kind = EventKind::tx_write;
+    attach_location_handle(event, location);
+    event.lock_slot = lock_slot;
+    event.has_lock_slot = true;
+    attach_value(event, value);
+    attach_current_transaction(event);
+    emit(event);
+}
+
+template <typename T>
+class tx_field {
+public:
+    tx_field()
+        : tx_field(T{}) {}
+
+    explicit tx_field(T initial)
+        : value_(std::move(initial)),
+          location_(make_standalone_location_handle(this, "self", typeid(T).name())) {
+        register_location();
+    }
+
+    tx_field(ObjectLifetimeHandle owner, std::string field_id)
+        : tx_field(std::move(owner), std::move(field_id), T{}) {}
+
+    tx_field(ObjectLifetimeHandle owner, std::string field_id, T initial)
+        : value_(std::move(initial)),
+          location_(make_location_handle(std::move(owner), this, std::move(field_id), {}, typeid(T).name())) {
+        register_location();
+    }
+
+    tx_field(const tx_field&) = delete;
+    tx_field& operator=(const tx_field&) = delete;
+    tx_field(tx_field&&) = delete;
+    tx_field& operator=(tx_field&&) = delete;
+
+    ~tx_field() {
+        if (registered_) {
+            tx_location_destroy(location_);
+        }
+    }
+
+    operator T() const {
+        return get();
+    }
+
+    tx_field& operator=(T value) {
+        set(std::move(value));
+        return *this;
+    }
+
+    T get(std::uint64_t lock_slot = 0, std::uint64_t version = 0) const {
+        ensure_registered();
+        T snapshot;
+        {
+            std::lock_guard lock(mutex_);
+            snapshot = value_;
+        }
+        tx_read_value(location_, snapshot, lock_slot, version);
+        return snapshot;
+    }
+
+    void set(T value, std::uint64_t lock_slot = 0) {
+        ensure_registered();
+        {
+            std::lock_guard lock(mutex_);
+            value_ = std::move(value);
+            tx_write_value(location_, value_, lock_slot);
+        }
+    }
+
+    const LocationHandle& lc_location_handle() const noexcept {
+        return location_;
+    }
+
+private:
+    void register_location() const {
+        std::lock_guard registration_lock(registration_mutex_);
+        if (registered_) return;
+        if (current_runtime == nullptr) return;
+        T snapshot;
+        {
+            std::lock_guard value_lock(mutex_);
+            snapshot = value_;
+        }
+        tx_location_register(location_);
+        tx_location_init(location_, snapshot);
+        registered_ = true;
+    }
+
+    void ensure_registered() const {
+        if (!registered_) {
+            register_location();
+        }
+    }
+
+    mutable std::mutex mutex_;
+    mutable std::mutex registration_mutex_;
+    T value_{};
+    LocationHandle location_;
+    mutable bool registered_ = false;
+};
 
 inline void tx_validate_begin() {
     Event event;
@@ -4927,6 +7953,8 @@ inline void tx_commit_success(std::uint64_t commit_clock) {
     } else {
         transaction_context.current_id = 0;
         transaction_context.depth = 0;
+        transaction_context.logical_transaction_id = 0;
+        transaction_context.attempt = 0;
     }
 }
 
@@ -4938,8 +7966,12 @@ inline void tx_abort(std::string reason) {
     emit(event);
     transaction_context.last_aborted_id = transaction_context.current_id;
     transaction_context.last_aborted_depth = transaction_context.depth;
+    transaction_context.last_aborted_logical_transaction_id = transaction_context.logical_transaction_id;
+    transaction_context.last_aborted_attempt = transaction_context.attempt;
     transaction_context.current_id = 0;
     transaction_context.depth = 0;
+    transaction_context.logical_transaction_id = 0;
+    transaction_context.attempt = 0;
 }
 
 inline void tx_retry(std::string reason, int attempt) {
@@ -4954,9 +7986,17 @@ inline void tx_retry(std::string reason, int attempt) {
     emit(event);
     transaction_context.last_aborted_id = 0;
     transaction_context.last_aborted_depth = 0;
+    transaction_context.last_aborted_logical_transaction_id = 0;
+    transaction_context.last_aborted_attempt = 0;
 }
 
 } // namespace stm
+
+template <typename Derived>
+using tx_object = stm::tx_object<Derived>;
+
+template <typename T>
+using tx_field = stm::tx_field<T>;
 
 template <typename T>
 class atomic {
@@ -7930,6 +10970,9 @@ struct OptionsConfig {
     bool operation_context_reduction = false;
     bool event_dependency_reduction = false;
     bool check_obstruction_freedom = false;
+    bool check_opacity = false;
+    StmLifetimePolicy opacity_lifetime_policy = StmLifetimePolicy::value_history_only;
+    std::size_t opacity_max_committed_orders = 0;
     int obstruction_switch_bound = 1000;
     std::chrono::milliseconds invocation_timeout{0};
     TraceFilter trace_filter;
@@ -8082,6 +11125,113 @@ inline std::string format_stm_events_section(
         ++emitted;
     }
     if (emitted == 0) return {};
+    return out.str();
+}
+
+inline std::string format_stm_opacity_section(
+    const StmOpacityHistory& history,
+    const StmOpacityVerificationResult& result,
+    const std::string& explanation,
+    bool checked
+) {
+    if (!checked) return {};
+    std::ostringstream out;
+    out << "stm opacity:\n"
+        << "  status=" << stm_opacity_status_name(result.status) << "\n"
+        << "  explanation=" << (explanation.empty() ? result.explanation : explanation) << "\n"
+        << "  lifetime_policy=" << stm_lifetime_policy_name(result.lifetime_policy) << "\n"
+        << "  ignored_lifetime_anomalies=" << result.ignored_lifetime_anomalies << "\n"
+        << "  committed_transactions=" << result.committed_transaction_count << "\n"
+        << "  observer_transactions=" << result.observer_transaction_count << "\n"
+        << "  committed_order_search_space_upper_bound="
+        << result.committed_order_search_space_upper_bound << "\n"
+        << "  committed_order_search_limit=";
+    if (result.committed_order_search_limit == 0) out << "unbounded\n";
+    else out << result.committed_order_search_limit << "\n";
+    out
+        << "  search_limit_exceeded=" << (result.search_limit_exceeded ? "true" : "false") << "\n"
+        << "  committed_orders_explored=" << result.committed_orders_explored << "\n"
+        << "  committed_order_memo_entries=" << result.committed_order_memo_entries << "\n"
+        << "  committed_order_prefixes_pruned=" << result.committed_order_prefixes_pruned << "\n"
+        << "  read_from_constraints=" << result.read_from_constraints << "\n"
+        << "  ordering_graph_edges=" << result.ordering_graph_edges << "\n"
+        << "  ordering_graph_transitive_edges=" << result.ordering_graph_transitive_edges << "\n"
+        << "  ordering_graph_candidate_prunes=" << result.ordering_graph_candidate_prunes << "\n"
+        << "  ambiguous_read_from_constraints=" << result.ambiguous_read_from_constraints << "\n"
+        << "  ambiguous_read_from_candidate_prunes=" << result.ambiguous_read_from_candidate_prunes << "\n"
+        << "  ambiguous_read_from_source_before_reader_prunes="
+        << result.ambiguous_read_from_source_before_reader_prunes << "\n"
+        << "  ambiguous_read_from_conflicting_writer_prunes="
+        << result.ambiguous_read_from_conflicting_writer_prunes << "\n"
+        << "  ambiguous_read_from_sources_eliminated="
+        << result.ambiguous_read_from_sources_eliminated << "\n"
+        << "  ambiguous_read_from_sources_shadowed="
+        << result.ambiguous_read_from_sources_shadowed << "\n"
+        << "  ambiguous_read_from_initial_sources_eliminated="
+        << result.ambiguous_read_from_initial_sources_eliminated << "\n"
+        << "  ambiguous_read_from_promoted_constraints="
+        << result.ambiguous_read_from_promoted_constraints << "\n"
+        << "  ordering_graph_cycle=" << (result.ordering_graph_cycle ? "true" : "false") << "\n"
+        << "  observer_checks=" << result.observer_checks << "\n";
+    auto append_samples = [&](std::string_view title, const std::vector<std::string>& samples) {
+        if (samples.empty()) return;
+        out << "  " << title << ":\n";
+        for (const auto& sample : samples) {
+            out << "    - " << sample << "\n";
+        }
+    };
+    append_samples("read_from_witnesses", result.read_from_witnesses);
+    append_samples("ambiguous_read_from_samples", result.ambiguous_read_from_samples);
+    append_samples("ordering_graph_samples", result.ordering_graph_samples);
+    append_samples("rejected_prefix_samples", result.rejected_prefix_samples);
+    append_samples("ignored_lifetime_anomaly_samples", result.ignored_lifetime_anomaly_samples);
+    if (!result.committed_order.empty()) {
+        out << "  committed_order=";
+        for (std::size_t i = 0; i < result.committed_order.size(); ++i) {
+            if (i != 0) out << ",";
+            out << "tx#" << result.committed_order[i];
+        }
+        out << "\n";
+    }
+    if (!history.locations.empty()) {
+        out << "  locations:\n";
+        for (const auto& [location_id, location] : history.locations) {
+            out << "    " << location_id;
+            if (!location.address_id.empty()) out << " address=" << location.address_id;
+            if (!location.identity_kind.empty()) out << " identity=" << location.identity_kind;
+            if (!location.location_handle_id.empty()) out << " handle=" << location.location_handle_id;
+            if (!location.object_lifetime_id.empty()) out << " object_lifetime=" << location.object_lifetime_id;
+            if (location.has_object_lifetime_generation) out << " object_generation=" << location.object_lifetime_generation;
+            if (!location.field_id.empty()) out << " field=" << location.field_id;
+            out << " generation=" << location.generation;
+            if (!location.label.empty()) out << " label=" << location.label;
+            if (!location.type_name.empty()) out << " type=" << location.type_name;
+            if (location.has_initial_value) out << " initial=" << location.initial_value.to_string();
+            if (location.destroyed) out << " destroyed=true";
+            out << "\n";
+        }
+    }
+    if (!history.transactions.empty()) {
+        out << "  transactions:\n";
+        for (const auto& tx : history.transactions) {
+            out << "    " << detail::stm_opacity_tx_label(tx)
+                << " outcome=" << stm_opacity_outcome_name(tx.outcome)
+                << " interval=" << tx.begin_event_index << "..";
+            if (tx.has_end) out << tx.end_event_index;
+            else out << "live";
+            out << " accesses=" << tx.accesses.size() << "\n";
+            for (const auto& access : tx.accesses) {
+                out << "      " << detail::stm_opacity_access_label(access, history);
+                if (!access.address_id.empty()) out << " address=" << access.address_id;
+                if (!access.identity_kind.empty()) out << " identity=" << access.identity_kind;
+                if (!access.location_handle_id.empty()) out << " handle=" << access.location_handle_id;
+                if (!access.object_lifetime_id.empty()) out << " object_lifetime=" << access.object_lifetime_id;
+                if (access.has_object_lifetime_generation) out << " object_generation=" << access.object_lifetime_generation;
+                if (!access.field_id.empty()) out << " field=" << access.field_id;
+                out << " generation=" << access.location_generation << "\n";
+            }
+        }
+    }
     return out.str();
 }
 
@@ -8824,6 +11974,42 @@ inline std::string format_model_check_failure_sections(
         format_scenario_section(scenario);
 }
 
+inline bool has_opacity_failure(const CheckResult& result) {
+    return result.opacity_checked && !result.opacity_result.success();
+}
+
+inline void set_combined_verification_failure(
+    CheckResult& result,
+    bool public_failed,
+    std::string public_explanation
+) {
+    const bool opacity_failed = has_opacity_failure(result);
+    if (!public_failed && !opacity_failed) return;
+
+    result.success = false;
+    if (public_failed) {
+        result.verifier_explanation = std::move(public_explanation);
+    }
+
+    if (public_failed && opacity_failed) {
+        result.failure = FailureKind::opacity_violation;
+        result.message = "invalid execution results and STM opacity violation";
+        return;
+    }
+    if (opacity_failed) {
+        result.failure = FailureKind::opacity_violation;
+        result.message = result.opacity_result.status == StmOpacityStatus::search_limit_exceeded
+            ? "STM opacity search limit exceeded"
+            : (result.opacity_result.status == StmOpacityStatus::malformed_history
+                ? "malformed STM opacity history"
+                : "STM opacity violation");
+        return;
+    }
+
+    result.failure = FailureKind::invalid_results;
+    result.message = "invalid execution results";
+}
+
 inline int count_schedule_context_switches(const std::vector<int>& schedule) {
     int switches = 0;
     for (std::size_t i = 1; i < schedule.size(); ++i) {
@@ -8941,6 +12127,15 @@ public:
     StressOptions& seed(std::uint64_t value) { config_.seed = value; return *this; }
     StressOptions& clock_source(ClockSourceKind value) { config_.clock_source = value; return *this; }
     StressOptions& memory_model(MemoryModel value) { detail::require_supported_memory_model(value); config_.memory_model = value; return *this; }
+    StressOptions& check_opacity(bool value = true) { config_.check_opacity = value; return *this; }
+    StressOptions& opacity_lifetime_policy(StmLifetimePolicy value) {
+        config_.opacity_lifetime_policy = value;
+        return *this;
+    }
+    StressOptions& opacity_max_committed_orders(std::size_t value) {
+        config_.opacity_max_committed_orders = value;
+        return *this;
+    }
     StressOptions& invocation_timeout(std::chrono::milliseconds value) {
         if (value.count() < 0) {
             throw std::invalid_argument("lincheck option invocation_timeout must be >= 0ms");
@@ -8989,19 +12184,42 @@ public:
                 if (result.warnings.empty()) result.warnings = success.warnings;
                 if (!result.success) return result;
                 auto verification = verifier.verify_with_report(scenario, result.execution_result);
-                if (!verification.success) {
-                    result.success = false;
-                    result.failure = FailureKind::invalid_results;
-                    result.message = "invalid execution results";
-                    result.verifier_explanation = std::move(verification.explanation);
-                    result.trace = "stress invocation found non-linearizable result\n" +
+                if (config_.check_opacity) {
+                    detail::apply_stm_opacity_check(
+                        result,
+                        StmOpacityVerificationOptions{.max_committed_orders = config_.opacity_max_committed_orders},
+                        StmOpacityHistoryBuildOptions{.lifetime_policy = config_.opacity_lifetime_policy}
+                    );
+                }
+                if (!verification.success || detail::has_opacity_failure(result)) {
+                    const bool public_failed = !verification.success;
+                    const bool opacity_failed = detail::has_opacity_failure(result);
+                    detail::set_combined_verification_failure(
+                        result,
+                        public_failed,
+                        std::move(verification.explanation)
+                    );
+                    const auto header = public_failed && opacity_failed
+                        ? "stress invocation found combined verification failure\n"
+                        : (opacity_failed
+                            ? "stress invocation found STM opacity failure\n"
+                            : "stress invocation found non-linearizable result\n");
+                    result.trace = std::string(header) +
                         detail::format_failure_summary_section(result.failure, result.message) +
+                        (detail::has_opacity_failure(result)
+                            ? detail::format_stm_opacity_section(
+                                result.opacity_history,
+                                result.opacity_result,
+                                result.opacity_explanation,
+                                result.opacity_checked
+                            )
+                            : std::string{}) +
                         detail::format_model_check_failure_sections(
                             scenario,
                             result.execution_result,
                             result.warnings,
                             result.state_representation,
-                            result.verifier_explanation,
+                            !verification.success ? result.verifier_explanation : std::string{},
                             &result.trace_events,
                             &result.memory_events,
                             &config_.trace_filter,
@@ -9034,6 +12252,10 @@ public:
                     success.event_dependencies = result.event_dependencies;
                     success.event_dependency_analysis = result.event_dependency_analysis;
                     success.operation_dependency_footprints = result.operation_dependency_footprints;
+                    success.opacity_checked = result.opacity_checked;
+                    success.opacity_history = result.opacity_history;
+                    success.opacity_result = result.opacity_result;
+                    success.opacity_explanation = result.opacity_explanation;
                 }
             }
         }
@@ -9061,19 +12283,42 @@ public:
                 if (result.warnings.empty()) result.warnings = success.warnings;
                 if (!result.success) return result;
                 auto verification = verifier.verify_with_report(scenario, result.execution_result);
-                if (!verification.success) {
-                    result.success = false;
-                    result.failure = FailureKind::invalid_results;
-                    result.message = "invalid execution results";
-                    result.verifier_explanation = std::move(verification.explanation);
-                    result.trace = "stress invocation found non-linearizable result\n" +
+                if (config_.check_opacity) {
+                    detail::apply_stm_opacity_check(
+                        result,
+                        StmOpacityVerificationOptions{.max_committed_orders = config_.opacity_max_committed_orders},
+                        StmOpacityHistoryBuildOptions{.lifetime_policy = config_.opacity_lifetime_policy}
+                    );
+                }
+                if (!verification.success || detail::has_opacity_failure(result)) {
+                    const bool public_failed = !verification.success;
+                    const bool opacity_failed = detail::has_opacity_failure(result);
+                    detail::set_combined_verification_failure(
+                        result,
+                        public_failed,
+                        std::move(verification.explanation)
+                    );
+                    const auto header = public_failed && opacity_failed
+                        ? "stress invocation found combined verification failure\n"
+                        : (opacity_failed
+                            ? "stress invocation found STM opacity failure\n"
+                            : "stress invocation found non-linearizable result\n");
+                    result.trace = std::string(header) +
                         detail::format_failure_summary_section(result.failure, result.message) +
+                        (detail::has_opacity_failure(result)
+                            ? detail::format_stm_opacity_section(
+                                result.opacity_history,
+                                result.opacity_result,
+                                result.opacity_explanation,
+                                result.opacity_checked
+                            )
+                            : std::string{}) +
                         detail::format_model_check_failure_sections(
                             scenario,
                             result.execution_result,
                             result.warnings,
                             result.state_representation,
-                            result.verifier_explanation,
+                            !verification.success ? result.verifier_explanation : std::string{},
                             &result.trace_events,
                             &result.memory_events,
                             &config_.trace_filter,
@@ -9106,6 +12351,10 @@ public:
                     success.event_dependencies = result.event_dependencies;
                     success.event_dependency_analysis = result.event_dependency_analysis;
                     success.operation_dependency_footprints = result.operation_dependency_footprints;
+                    success.opacity_checked = result.opacity_checked;
+                    success.opacity_history = result.opacity_history;
+                    success.opacity_result = result.opacity_result;
+                    success.opacity_explanation = result.opacity_explanation;
                 }
             }
         }
@@ -11872,6 +15121,15 @@ public:
     ModelCheckingOptions& operation_context_reduction(bool value = true) { config_.operation_context_reduction = value; return *this; }
     ModelCheckingOptions& event_dependency_reduction(bool value = true) { config_.event_dependency_reduction = value; return *this; }
     ModelCheckingOptions& check_obstruction_freedom(bool value = true) { config_.check_obstruction_freedom = value; return *this; }
+    ModelCheckingOptions& check_opacity(bool value = true) { config_.check_opacity = value; return *this; }
+    ModelCheckingOptions& opacity_lifetime_policy(StmLifetimePolicy value) {
+        config_.opacity_lifetime_policy = value;
+        return *this;
+    }
+    ModelCheckingOptions& opacity_max_committed_orders(std::size_t value) {
+        config_.opacity_max_committed_orders = value;
+        return *this;
+    }
     ModelCheckingOptions& obstruction_switch_bound(int value) { detail::require_positive_option("obstruction_switch_bound", value); config_.obstruction_switch_bound = value; return *this; }
     ModelCheckingOptions& trace_filter(TraceFilter value) { config_.trace_filter = std::move(value); return *this; }
     ModelCheckingOptions& trace_include(std::string pattern) { config_.trace_filter.include(std::move(pattern)); return *this; }
@@ -12043,6 +15301,10 @@ public:
                 success.event_dependencies = result.event_dependencies;
                 success.event_dependency_analysis = result.event_dependency_analysis;
                 success.operation_dependency_footprints = result.operation_dependency_footprints;
+                success.opacity_checked = result.opacity_checked;
+                success.opacity_history = result.opacity_history;
+                success.opacity_result = result.opacity_result;
+                success.opacity_explanation = result.opacity_explanation;
             }
         }
         return success;
@@ -12225,7 +15487,7 @@ private:
                 schedule_context_switches(*schedule)
             );
             auto result = run_schedule(spec, scenario, *schedule);
-            const auto history_key = result.success
+            const auto history_key = result.success && !config_.check_opacity
                 ? detail::public_history_equivalence_key(scenario, result.execution_result)
                 : std::optional<std::string>{};
             if (history_key && verified_successful_histories.find(*history_key) != verified_successful_histories.end()) {
@@ -12252,19 +15514,35 @@ private:
     ) const {
         if (!result.success) return result;
         auto verification = verifier.verify_with_report(scenario, result.execution_result);
-        if (!verification.success) {
-            result.success = false;
-            result.failure = FailureKind::invalid_results;
-            result.message = "invalid execution results";
-            result.verifier_explanation = std::move(verification.explanation);
+        if (config_.check_opacity) {
+            detail::apply_stm_opacity_check(
+                result,
+                StmOpacityVerificationOptions{.max_committed_orders = config_.opacity_max_committed_orders},
+                StmOpacityHistoryBuildOptions{.lifetime_policy = config_.opacity_lifetime_policy}
+            );
+        }
+        if (!verification.success || detail::has_opacity_failure(result)) {
+            detail::set_combined_verification_failure(
+                result,
+                !verification.success,
+                std::move(verification.explanation)
+            );
             result.trace = result.trace + "\n" +
                 detail::format_failure_summary_section(result.failure, result.message) +
+                (detail::has_opacity_failure(result)
+                    ? detail::format_stm_opacity_section(
+                        result.opacity_history,
+                        result.opacity_result,
+                        result.opacity_explanation,
+                        result.opacity_checked
+                    )
+                    : std::string{}) +
                 detail::format_model_check_failure_sections(
                     scenario,
                     result.execution_result,
                     result.warnings,
                     result.state_representation,
-                    result.verifier_explanation,
+                    !result.verifier_explanation.empty() ? result.verifier_explanation : std::string{},
                     &result.trace_events,
                     &result.memory_events,
                     &config_.trace_filter,

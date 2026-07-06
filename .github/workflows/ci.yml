@@ -30,7 +30,7 @@ jobs:
           git clone https://gitlab.com/Coccimiglio/mvcc_tm.git upstream/mvcc_tm
           git -C upstream/mvcc_tm checkout 0d1454cb7d902d6534cb79dc788f08395906bb44
           git -C upstream/mvcc_tm submodule update --init --recursive
-          git -C upstream/mvcc_tm apply ../../third_party/mvcc_tm-lincheck-hooks.patch
+          git -C upstream/mvcc_tm apply --unidiff-zero ../../third_party/mvcc_tm-lincheck-hooks.patch
 
       - name: Configure
         run: cmake -S . -B build -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
@@ -39,8 +39,4 @@ jobs:
         run: cmake --build build -j2
 
       - name: Test
-        run: |
-          ctest --test-dir build --output-on-failure
-          ./build/multiverse_tiny_set_example
-          ./build/multiverse_smoke_tests
-          ./build/modular_header_smoke
+        run: ctest --test-dir build --output-on-failure

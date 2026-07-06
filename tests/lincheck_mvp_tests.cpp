@@ -8,6 +8,7 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -5959,9 +5960,14 @@ void stm_hooks_emit_trace_events_and_switch_points() {
     int value = 0;
     {
         lincheck::ScopedRuntime scoped(&runtime);
+        lincheck::stm::tx_location_register(&value, "value", "int");
+        lincheck::stm::tx_location_init(&value, value);
         lincheck::stm::tx_begin(false, 10);
+        lincheck::stm::tx_attempt_metadata(1001, 1);
         lincheck::stm::tx_read(&value, 7, 10);
+        lincheck::stm::tx_read_value(&value, 0, 7, 10);
         lincheck::stm::tx_write(&value, 7);
+        lincheck::stm::tx_write_value(&value, 1, 7);
         lincheck::stm::tx_validate_begin();
         lincheck::stm::tx_validate_end(true);
         lincheck::stm::tx_lock_attempt(7);
@@ -5981,6 +5987,7 @@ void stm_hooks_emit_trace_events_and_switch_points() {
         lincheck::stm::tx_lock_failed(0);
         lincheck::stm::tx_lock_released(0);
         lincheck::stm::tx_commit_success(0);
+        lincheck::stm::tx_location_destroy(&value);
     }
 
     auto has_event = [&](const std::string& needle) {
@@ -6007,6 +6014,10 @@ void stm_hooks_emit_trace_events_and_switch_points() {
     });
 
     require(has_event("stm.tx_begin"), "STM tx_begin hook should emit a trace event");
+    require(has_event("stm.tx_location_register"), "STM location register hook should emit a trace event");
+    require(has_event("stm.tx_location_init"), "STM location init hook should emit a trace event");
+    require(has_event("stm.tx_location_destroy"), "STM location destroy hook should emit a trace event");
+    require(has_event("stm.tx_attempt_metadata"), "STM attempt metadata hook should emit a trace event");
     require(has_event("stm.tx_read"), "STM tx_read hook should emit a trace event");
     require(has_event("stm.tx_write"), "STM tx_write hook should emit a trace event");
     require(has_event("stm.tx_validate_begin"), "STM tx_validate_begin hook should emit a trace event");
@@ -6020,9 +6031,16 @@ void stm_hooks_emit_trace_events_and_switch_points() {
     require(has_event("stm.tx_abort reason=conflict"), "STM tx_abort hook should emit a trace event");
     require(has_event("stm.tx_retry attempt=2 reason=abort"), "STM tx_retry hook should emit a trace event");
     require(has_event_parts("stm.tx_begin", "clock=0"), "STM begin hook should preserve a zero start clock");
+    require(has_event_parts("stm.tx_location_init", "value=0"), "STM location init hook should preserve the initial value");
+    require(has_event_parts("stm.tx_location_register", "label=value"), "STM location register hook should preserve labels");
+    require(has_event_parts("stm.tx_location_register", "type=int"), "STM location register hook should preserve type names");
+    require(has_event_parts("stm.tx_attempt_metadata", "logical_tx_id=1001"), "STM attempt metadata should preserve logical transaction IDs");
+    require(has_event_parts("stm.tx_attempt_metadata", "attempt=1"), "STM attempt metadata should preserve attempts");
     require(has_event_parts("stm.tx_read", "lock_slot=0"), "STM read hook should preserve a zero lock slot");
     require(has_event_parts("stm.tx_read", "version=0"), "STM read hook should preserve a zero version");
+    require(has_event_parts("stm.tx_read", "value=0"), "STM read value hook should preserve observed values");
     require(has_event_parts("stm.tx_write", "lock_slot=0"), "STM write hook should preserve a zero lock slot");
+    require(has_event_parts("stm.tx_write", "value=1"), "STM write value hook should preserve written values");
     require(has_event("stm.tx_lock_attempt lock_slot=0"), "STM lock hook should preserve a zero lock slot");
     require(has_event_parts("stm.tx_commit_success", "clock=0"), "STM commit hook should preserve a zero commit clock");
     require(has_event_parts("stm.tx_begin", "tx_id=1"), "STM begin hook should assign a transaction ID");
@@ -6031,6 +6049,8 @@ void stm_hooks_emit_trace_events_and_switch_points() {
     require(has_event_parts("stm.tx_abort", "tx_id=2"), "STM abort hook should preserve the aborted transaction ID");
     require(has_event_parts("stm.tx_retry", "tx_id=2"), "STM retry hook should preserve the aborted transaction ID");
     require(has_event_parts("stm.tx_begin", "tx_depth=1"), "STM begin hook should record transaction depth");
+    require(has_event_parts("stm.tx_read", "logical_tx_id=1001"), "STM read value hook should preserve logical transaction IDs");
+    require(has_event_parts("stm.tx_write", "logical_tx_id=1001"), "STM write value hook should preserve logical transaction IDs");
     require(has_stable_address, "STM read/write hooks should format addresses with stable object IDs");
     require(
         std::any_of(runtime.stm_events.begin(), runtime.stm_events.end(), [](const auto& event) {
@@ -6053,6 +6073,34 @@ void stm_hooks_emit_trace_events_and_switch_points() {
     );
     require(
         std::any_of(runtime.stm_events.begin(), runtime.stm_events.end(), [](const auto& event) {
+            return event.kind == lincheck::stm::EventKind::tx_location_init &&
+                event.has_value &&
+                lincheck::value_cast<int>(event.value) == 0;
+        }),
+        "raw STM location init events should preserve structured values"
+    );
+    require(
+        std::any_of(runtime.stm_events.begin(), runtime.stm_events.end(), [](const auto& event) {
+            return event.kind == lincheck::stm::EventKind::tx_read &&
+                event.has_value &&
+                lincheck::value_cast<int>(event.value) == 0 &&
+                event.logical_transaction_id == 1001 &&
+                event.attempt == 1;
+        }),
+        "raw STM read value events should preserve structured values and attempt metadata"
+    );
+    require(
+        std::any_of(runtime.stm_events.begin(), runtime.stm_events.end(), [](const auto& event) {
+            return event.kind == lincheck::stm::EventKind::tx_write &&
+                event.has_value &&
+                lincheck::value_cast<int>(event.value) == 1 &&
+                event.logical_transaction_id == 1001 &&
+                event.attempt == 1;
+        }),
+        "raw STM write value events should preserve structured values and attempt metadata"
+    );
+    require(
+        std::any_of(runtime.stm_events.begin(), runtime.stm_events.end(), [](const auto& event) {
             return event.kind == lincheck::stm::EventKind::tx_validate_end && event.success;
         }),
         "raw STM validation events should preserve structured success metadata"
@@ -6067,6 +6115,8 @@ void stm_hooks_emit_trace_events_and_switch_points() {
     );
     require(has_switch("stm.tx_abort"), "STM abort hook should emit a scheduler switch point");
     require(has_switch("stm.tx_retry"), "STM retry hook should emit a scheduler switch point");
+    require(has_switch("stm.tx_location_init"), "STM location init hook should emit a scheduler switch point");
+    require(has_switch("stm.tx_attempt_metadata"), "STM attempt metadata hook should emit a scheduler switch point");
     require(has_commit_switch, "STM hooks should emit scheduler switch points");
     require(has_lock_release_switch, "STM lock release hook should emit a scheduler switch point");
 }
@@ -6076,12 +6126,17 @@ void multiverse_hook_macros_bind_to_stm_hooks() {
     int value = 0;
     {
         lincheck::ScopedRuntime scoped(&runtime);
+        MULTIVERSE_LINCHECK_TX_LOCATION_REGISTER(&value, "value", "int");
+        MULTIVERSE_LINCHECK_TX_LOCATION_INIT(&value, value);
         MULTIVERSE_LINCHECK_TX_BEGIN(false, 20);
+        MULTIVERSE_LINCHECK_TX_ATTEMPT_METADATA(2002, 4);
         MULTIVERSE_LINCHECK_TX_READ(&value, 3, 20);
+        MULTIVERSE_LINCHECK_TX_READ_VALUE(&value, value, 3, 20);
         MULTIVERSE_LINCHECK_TX_LOCK_ATTEMPT(3);
         MULTIVERSE_LINCHECK_TX_LOCK_ACQUIRED(3);
         MULTIVERSE_LINCHECK_TX_LOCK_FAILED(3);
         MULTIVERSE_LINCHECK_TX_WRITE(&value, 3);
+        MULTIVERSE_LINCHECK_TX_WRITE_VALUE(&value, 1, 3);
         MULTIVERSE_LINCHECK_TX_VALIDATE_BEGIN();
         MULTIVERSE_LINCHECK_TX_VALIDATE_END(false);
         MULTIVERSE_LINCHECK_TX_LOCK_RELEASED(3);
@@ -6089,8 +6144,36 @@ void multiverse_hook_macros_bind_to_stm_hooks() {
         MULTIVERSE_LINCHECK_TX_COMMIT_SUCCESS(21);
         MULTIVERSE_LINCHECK_TX_ABORT("conflict");
         MULTIVERSE_LINCHECK_TX_RETRY("abort", 4);
+        MULTIVERSE_LINCHECK_TX_LOCATION_DESTROY(&value);
     }
 
+    const auto has_location_init = std::any_of(runtime.events.begin(), runtime.events.end(), [](const std::string& event) {
+        return event.find("stm.tx_location_init") != std::string::npos &&
+            event.find("value=0") != std::string::npos;
+    });
+    const auto has_location_register = std::any_of(runtime.events.begin(), runtime.events.end(), [](const std::string& event) {
+        return event.find("stm.tx_location_register") != std::string::npos &&
+            event.find("label=value") != std::string::npos &&
+            event.find("type=int") != std::string::npos;
+    });
+    const auto has_location_destroy = std::any_of(runtime.events.begin(), runtime.events.end(), [](const std::string& event) {
+        return event.find("stm.tx_location_destroy") != std::string::npos;
+    });
+    const auto has_attempt_metadata = std::any_of(runtime.events.begin(), runtime.events.end(), [](const std::string& event) {
+        return event.find("stm.tx_attempt_metadata") != std::string::npos &&
+            event.find("logical_tx_id=2002") != std::string::npos &&
+            event.find("attempt=4") != std::string::npos;
+    });
+    const auto has_read_value = std::any_of(runtime.events.begin(), runtime.events.end(), [](const std::string& event) {
+        return event.find("stm.tx_read") != std::string::npos &&
+            event.find("value=0") != std::string::npos &&
+            event.find("logical_tx_id=2002") != std::string::npos;
+    });
+    const auto has_write_value = std::any_of(runtime.events.begin(), runtime.events.end(), [](const std::string& event) {
+        return event.find("stm.tx_write") != std::string::npos &&
+            event.find("value=1") != std::string::npos &&
+            event.find("logical_tx_id=2002") != std::string::npos;
+    });
     const auto has_lock_attempt = std::any_of(runtime.events.begin(), runtime.events.end(), [](const std::string& event) {
         return event.find("stm.tx_lock_attempt") != std::string::npos;
     });
@@ -6113,6 +6196,12 @@ void multiverse_hook_macros_bind_to_stm_hooks() {
         return event.find("stm.tx_retry attempt=4 reason=abort") != std::string::npos;
     });
 
+    require(has_location_init, "Multiverse hook macros should bind location initialization to STM hooks");
+    require(has_location_register, "Multiverse hook macros should bind location registration to STM hooks");
+    require(has_location_destroy, "Multiverse hook macros should bind location destruction to STM hooks");
+    require(has_attempt_metadata, "Multiverse hook macros should bind attempt metadata to STM hooks");
+    require(has_read_value, "Multiverse hook macros should bind value reads to STM hooks");
+    require(has_write_value, "Multiverse hook macros should bind value writes to STM hooks");
     require(has_lock_attempt, "Multiverse hook macros should bind lock attempts to STM hooks");
     require(has_lock_failed, "Multiverse hook macros should bind lock failures to STM hooks");
     require(has_validation_failure, "Multiverse hook macros should bind validation results to STM hooks");
@@ -6120,6 +6209,2257 @@ void multiverse_hook_macros_bind_to_stm_hooks() {
     require(has_commit, "Multiverse hook macros should bind commits to STM hooks");
     require(has_abort, "Multiverse hook macros should bind aborts to STM hooks");
     require(has_retry, "Multiverse hook macros should bind retries to STM hooks");
+}
+
+struct UnsupportedOpacityPayload {
+    int value = 0;
+};
+
+lincheck::CheckResult record_stm_history(auto&& fn) {
+    return lincheck::run_concurrent_test([&] {
+        std::forward<decltype(fn)>(fn)();
+    });
+}
+
+lincheck::StmEventRecord opacity_event(
+    std::string kind,
+    std::size_t event_index,
+    std::uint64_t tx_id = 0,
+    std::string address_id = {},
+    std::optional<lincheck::Value> value = std::nullopt
+) {
+    lincheck::StmEventRecord event;
+    event.sequence = event_index;
+    event.event_index = event_index;
+    event.thread_id = 0;
+    event.kind = std::move(kind);
+    event.description = event.kind;
+    event.transaction_id = tx_id;
+    event.transaction_depth = tx_id == 0 ? 0 : 1;
+    event.address_id = std::move(address_id);
+    if (value) {
+        event.value = *value;
+        event.has_value = true;
+    }
+    return event;
+}
+
+lincheck::StmEventRecord logical_opacity_event(
+    std::string kind,
+    std::size_t event_index,
+    std::uint64_t tx_id,
+    std::uint64_t logical_id,
+    int attempt,
+    std::string address_id = {},
+    std::optional<lincheck::Value> value = std::nullopt
+) {
+    auto event = opacity_event(std::move(kind), event_index, tx_id, std::move(address_id), std::move(value));
+    event.logical_transaction_id = logical_id;
+    event.attempt = attempt;
+    return event;
+}
+
+lincheck::StmEventRecord opacity_handle_event(
+    std::string kind,
+    std::size_t event_index,
+    std::uint64_t tx_id,
+    std::string location_handle_id,
+    std::string address_id,
+    std::optional<lincheck::Value> value = std::nullopt,
+    std::string object_lifetime_id = "objlife#manual",
+    std::size_t object_lifetime_generation = 0,
+    std::string field_id = "field"
+) {
+    auto event = opacity_event(std::move(kind), event_index, tx_id, std::move(address_id), std::move(value));
+    event.location_handle_id = std::move(location_handle_id);
+    event.object_lifetime_id = std::move(object_lifetime_id);
+    event.object_lifetime_generation = object_lifetime_generation;
+    event.has_object_lifetime_generation = true;
+    event.field_id = std::move(field_id);
+    return event;
+}
+
+lincheck::StmOpacityHistoryBuildOptions strict_lifetime_build_options() {
+    return lincheck::StmOpacityHistoryBuildOptions{
+        .lifetime_policy = lincheck::StmLifetimePolicy::strict_lifetimes
+    };
+}
+
+void opacity_history_builder_accepts_well_formed_value_history() {
+    int value = 0;
+    const auto recorded = record_stm_history([&] {
+        lincheck::stm::tx_location_register(&value, "value", "int");
+        lincheck::stm::tx_location_init(&value, 0);
+        lincheck::stm::tx_begin(false);
+        lincheck::stm::tx_write_value(&value, 1);
+        lincheck::stm::tx_commit_success();
+        lincheck::stm::tx_begin(true);
+        lincheck::stm::tx_read_value(&value, 1);
+        lincheck::stm::tx_commit_success();
+    });
+
+    const auto history = lincheck::build_stm_opacity_history(recorded.stm_events);
+    require(history.success(), "well-formed STM value history should build");
+    require(history.history.locations.size() == 1, "opacity history should retain one location");
+    require(history.history.transactions.size() == 2, "opacity history should retain two transactions");
+
+    const auto verification = lincheck::verify_stm_opacity(history.history);
+    require(verification.success(), "well-formed committed history should be opaque");
+    require(verification.committed_order.size() == 2, "opacity verifier should report committed order");
+}
+
+void opacity_history_exports_json_and_dot() {
+    int value = 0;
+    const auto recorded = record_stm_history([&] {
+        lincheck::stm::tx_location_register(&value, "value", "int");
+        lincheck::stm::tx_location_init(&value, 0);
+        lincheck::stm::tx_begin(false);
+        lincheck::stm::tx_write_value(&value, 1);
+        lincheck::stm::tx_commit_success();
+    });
+
+    const auto history = lincheck::build_stm_opacity_history(recorded.stm_events);
+    require(history.success(), "exported opacity history should build");
+    const auto verification = lincheck::verify_stm_opacity(history.history);
+    require(verification.success(), "exported opacity history should verify");
+
+    const auto json = lincheck::format_stm_opacity_history_json(history.history, &verification);
+    require(json.find("\"locations\"") != std::string::npos, "opacity JSON should include locations");
+    require(json.find("\"transactions\"") != std::string::npos, "opacity JSON should include transactions");
+    require(json.find("\"verification\"") != std::string::npos, "opacity JSON should include verification result");
+    require(json.find("\"lifetime_policy\": \"value_history_only\"") != std::string::npos, "opacity JSON should include lifetime policy");
+    require(json.find("\"ignored_lifetime_anomalies\"") != std::string::npos, "opacity JSON should include lifetime anomaly counters");
+    require(json.find("\"committed_orders_explored\"") != std::string::npos, "opacity JSON should include search stats");
+    require(json.find("\"committed_order_prefixes_pruned\"") != std::string::npos, "opacity JSON should include memo stats");
+    require(json.find("\"read_from_constraints\"") != std::string::npos, "opacity JSON should include read-from stats");
+    require(json.find("\"ambiguous_read_from_constraints\"") != std::string::npos, "opacity JSON should include ambiguous read-from stats");
+    require(
+        json.find("\"ambiguous_read_from_source_before_reader_prunes\"") != std::string::npos,
+        "opacity JSON should include ambiguous source-before-reader prune stats"
+    );
+    require(
+        json.find("\"ambiguous_read_from_conflicting_writer_prunes\"") != std::string::npos,
+        "opacity JSON should include ambiguous conflicting-writer prune stats"
+    );
+    require(
+        json.find("\"ambiguous_read_from_sources_eliminated\"") != std::string::npos,
+        "opacity JSON should include ambiguous source-elimination stats"
+    );
+    require(
+        json.find("\"ambiguous_read_from_sources_shadowed\"") != std::string::npos,
+        "opacity JSON should include ambiguous shadowed-source stats"
+    );
+    require(
+        json.find("\"ambiguous_read_from_initial_sources_eliminated\"") != std::string::npos,
+        "opacity JSON should include ambiguous initial-source elimination stats"
+    );
+    require(
+        json.find("\"ambiguous_read_from_promoted_constraints\"") != std::string::npos,
+        "opacity JSON should include ambiguous promoted-constraint stats"
+    );
+    require(json.find("\"ordering_graph_edges\"") != std::string::npos, "opacity JSON should include ordering graph stats");
+    require(json.find("\"address_id\"") != std::string::npos, "opacity JSON should include location addresses");
+    require(json.find("\"generation\"") != std::string::npos, "opacity JSON should include location generations");
+    require(json.find("\"read_from_witnesses\"") != std::string::npos, "opacity JSON should include read-from witnesses");
+    require(json.find("\"ambiguous_read_from_samples\"") != std::string::npos, "opacity JSON should include ambiguous read-from samples");
+    require(json.find("\"rejected_prefix_samples\"") != std::string::npos, "opacity JSON should include prefix samples");
+
+    const auto dot = lincheck::format_stm_opacity_history_dot(history.history, &verification, "opacity graph");
+    require(dot.find("digraph opacity_graph") != std::string::npos, "opacity DOT should sanitize graph names");
+    require(dot.find("outcome=committed") != std::string::npos, "opacity DOT should include transaction outcomes");
+    require(dot.find("value=1") != std::string::npos, "opacity DOT should include access values");
+    require(dot.find("generation=0") != std::string::npos, "opacity DOT should include location generations");
+    require(dot.find("lifetime_policy=value_history_only") != std::string::npos, "opacity DOT should include lifetime policy");
+    require(dot.find("ignored_lifetime_anomalies=0") != std::string::npos, "opacity DOT should include lifetime anomaly counters");
+    require(dot.find("pruned_prefixes=") != std::string::npos, "opacity DOT should include memo stats");
+    require(dot.find("read_from_constraints=") != std::string::npos, "opacity DOT should include read-from stats");
+}
+
+void opacity_history_builder_rejects_missing_initial_values_and_values() {
+    int value = 0;
+    const auto missing_initial = record_stm_history([&] {
+        lincheck::stm::tx_begin(true);
+        lincheck::stm::tx_read_value(&value, 0);
+        lincheck::stm::tx_commit_success();
+    });
+    const auto missing_initial_history = lincheck::build_stm_opacity_history(missing_initial.stm_events);
+    require(!missing_initial_history.success(), "opacity builder should reject reads without initial values");
+    require(
+        missing_initial_history.status == lincheck::StmOpacityStatus::malformed_history,
+        "missing initial value should be a malformed opacity history"
+    );
+    require(
+        missing_initial_history.explanation.find("no registered initial value") != std::string::npos,
+        "missing initial value diagnostic should be explicit"
+    );
+
+    const auto missing_value = record_stm_history([&] {
+        lincheck::stm::tx_location_init(&value, 0);
+        lincheck::stm::tx_begin(true);
+        lincheck::stm::tx_read(&value);
+        lincheck::stm::tx_commit_success();
+    });
+    const auto missing_value_history = lincheck::build_stm_opacity_history(missing_value.stm_events);
+    require(!missing_value_history.success(), "opacity builder should reject metadata-only reads");
+    require(
+        missing_value_history.explanation.find("missing a value hook") != std::string::npos,
+        "metadata-only read diagnostic should mention the missing value hook"
+    );
+}
+
+void opacity_history_builder_rejects_unsupported_value_types() {
+    UnsupportedOpacityPayload payload{7};
+    const auto recorded = record_stm_history([&] {
+        lincheck::stm::tx_location_init(&payload, payload);
+        lincheck::stm::tx_begin(true);
+        lincheck::stm::tx_read_value(&payload, payload);
+        lincheck::stm::tx_commit_success();
+    });
+
+    const auto history = lincheck::build_stm_opacity_history(recorded.stm_events);
+    require(!history.success(), "opacity builder should reject unsupported value payloads");
+    require(
+        history.explanation.find("unsupported value type") != std::string::npos,
+        "unsupported value diagnostic should be explicit"
+    );
+}
+
+void opacity_verifier_rejects_dirty_aborted_reads() {
+    int value = 0;
+    const auto recorded = record_stm_history([&] {
+        lincheck::stm::tx_location_init(&value, 0);
+        lincheck::stm::tx_begin(false);
+        lincheck::stm::tx_write_value(&value, 1);
+        lincheck::stm::tx_abort("scripted");
+        lincheck::stm::tx_begin(true);
+        lincheck::stm::tx_read_value(&value, 1);
+        lincheck::stm::tx_commit_success();
+    });
+
+    const auto history = lincheck::build_stm_opacity_history(recorded.stm_events);
+    require(history.success(), "dirty-read history should be well formed");
+    const auto verification = lincheck::verify_stm_opacity(history.history);
+    require(!verification.success(), "dirty read from an aborted transaction should violate opacity");
+    require(
+        verification.explanation.find("observed 1") != std::string::npos,
+        "dirty-read opacity diagnostic should include the observed value"
+    );
+}
+
+void opacity_verifier_accepts_aborted_and_live_consistent_transactions() {
+    int value = 0;
+    const auto recorded = record_stm_history([&] {
+        lincheck::stm::tx_location_init(&value, 0);
+        lincheck::stm::tx_begin(false);
+        lincheck::stm::tx_write_value(&value, 1);
+        lincheck::stm::tx_commit_success();
+        lincheck::stm::tx_begin(true);
+        lincheck::stm::tx_read_value(&value, 1);
+        lincheck::stm::tx_abort("scripted");
+        lincheck::stm::tx_begin(true);
+        lincheck::stm::tx_read_value(&value, 1);
+    });
+    lincheck::stm::tx_abort("cleanup");
+
+    const auto history = lincheck::build_stm_opacity_history(recorded.stm_events);
+    require(history.success(), "aborted/live consistent history should be well formed");
+    const auto verification = lincheck::verify_stm_opacity(history.history);
+    require(verification.success(), "consistent aborted and live transactions should satisfy opacity");
+    require(verification.observer_checks >= 2, "opacity verifier should check aborted and live observers");
+}
+
+void opacity_verifier_accepts_read_own_write() {
+    int value = 0;
+    const auto recorded = record_stm_history([&] {
+        lincheck::stm::tx_location_init(&value, 0);
+        lincheck::stm::tx_begin(false);
+        lincheck::stm::tx_write_value(&value, 1);
+        lincheck::stm::tx_read_value(&value, 1);
+        lincheck::stm::tx_commit_success();
+    });
+
+    const auto history = lincheck::build_stm_opacity_history(recorded.stm_events);
+    require(history.success(), "read-own-write history should be well formed");
+    const auto verification = lincheck::verify_stm_opacity(history.history);
+    require(verification.success(), "read-own-write transaction should satisfy opacity");
+}
+
+void opacity_verifier_rejects_stale_reads_after_real_time_predecessor() {
+    int value = 0;
+    const auto recorded = record_stm_history([&] {
+        lincheck::stm::tx_location_init(&value, 0);
+        lincheck::stm::tx_begin(false);
+        lincheck::stm::tx_write_value(&value, 1);
+        lincheck::stm::tx_commit_success();
+        lincheck::stm::tx_begin(true);
+        lincheck::stm::tx_read_value(&value, 0);
+        lincheck::stm::tx_commit_success();
+    });
+
+    const auto history = lincheck::build_stm_opacity_history(recorded.stm_events);
+    require(history.success(), "stale-read history should be well formed");
+    const auto verification = lincheck::verify_stm_opacity(history.history);
+    require(!verification.success(), "stale read after a real-time predecessor should violate opacity");
+    require(
+        verification.explanation.find("observed 0") != std::string::npos,
+        "stale-read diagnostic should include the rejected observed value"
+    );
+    require(
+        verification.explanation.find("cycle contributors") != std::string::npos,
+        "stale-read diagnostic should include ordering cycle context"
+    );
+    require(
+        verification.explanation.find("read-from witnesses") != std::string::npos,
+        "stale-read diagnostic should include read-from witness context"
+    );
+}
+
+void opacity_verifier_rejects_inconsistent_two_location_snapshot() {
+    int x = 0;
+    int y = 0;
+    const auto recorded = record_stm_history([&] {
+        lincheck::stm::tx_location_register(&x, "x", "int");
+        lincheck::stm::tx_location_register(&y, "y", "int");
+        lincheck::stm::tx_location_init(&x, 0);
+        lincheck::stm::tx_location_init(&y, 0);
+        lincheck::stm::tx_begin(false);
+        lincheck::stm::tx_write_value(&x, 1);
+        lincheck::stm::tx_write_value(&y, 1);
+        lincheck::stm::tx_commit_success();
+        lincheck::stm::tx_begin(true);
+        lincheck::stm::tx_read_value(&x, 1);
+        lincheck::stm::tx_read_value(&y, 0);
+        lincheck::stm::tx_abort("snapshot");
+    });
+
+    const auto history = lincheck::build_stm_opacity_history(recorded.stm_events);
+    require(history.success(), "inconsistent-snapshot history should be well formed");
+    const auto verification = lincheck::verify_stm_opacity(history.history);
+    require(!verification.success(), "inconsistent two-location snapshot should violate opacity");
+    require(
+        verification.explanation.find("observed 0") != std::string::npos,
+        "snapshot diagnostic should include the inconsistent observed value"
+    );
+}
+
+void opacity_verifier_rejects_incompatible_observer_real_time_prefixes() {
+    std::vector<lincheck::StmEventRecord> events;
+    events.push_back(opacity_event("tx_location_init", 1, 0, "y", lincheck::Value(0)));
+    events.push_back(opacity_event("tx_begin", 10, 1));
+    events.push_back(opacity_event("tx_write", 11, 1, "y", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_begin", 20, 2));
+    events.push_back(opacity_event("tx_read", 21, 2, "y", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_abort", 30, 2));
+    events.push_back(opacity_event("tx_begin", 40, 3));
+    events.push_back(opacity_event("tx_read", 41, 3, "y", lincheck::Value(0)));
+    events.push_back(opacity_event("tx_abort", 50, 3));
+    events.push_back(opacity_event("tx_commit_success", 100, 1));
+
+    const auto history = lincheck::build_stm_opacity_history(events);
+    require(history.success(), "observer-prefix history should be well formed");
+    const auto verification = lincheck::verify_stm_opacity(history.history);
+    require(
+        !verification.success(),
+        "opacity verifier should reject observer prefixes that conflict with observer real-time order"
+    );
+    require(
+        verification.explanation.find("observer real-time prefix constraints") != std::string::npos,
+        "observer-prefix diagnostic should mention real-time prefix constraints"
+    );
+}
+
+void opacity_history_builder_rejects_duplicate_transaction_end() {
+    int value = 0;
+    auto recorded = record_stm_history([&] {
+        lincheck::stm::tx_location_init(&value, 0);
+        lincheck::stm::tx_begin(false);
+        lincheck::stm::tx_write_value(&value, 1);
+        lincheck::stm::tx_commit_success();
+    });
+    auto duplicate_end = recorded.stm_events.back();
+    duplicate_end.sequence += 1;
+    duplicate_end.event_index += 1;
+    recorded.stm_events.push_back(std::move(duplicate_end));
+
+    const auto history = lincheck::build_stm_opacity_history(recorded.stm_events);
+    require(!history.success(), "opacity builder should reject duplicate transaction ends");
+    require(
+        history.explanation.find("ended more than once") != std::string::npos,
+        "duplicate-end diagnostic should be explicit"
+    );
+}
+
+void opacity_history_builder_models_safe_location_lifetime_reuse() {
+    std::vector<lincheck::StmEventRecord> events;
+    events.push_back(opacity_event("tx_location_register", 1, 0, "x"));
+    events.back().label = "slot";
+    events.push_back(opacity_event("tx_location_init", 2, 0, "x", lincheck::Value(0)));
+    events.push_back(opacity_event("tx_begin", 10, 1));
+    events.push_back(opacity_event("tx_read", 11, 1, "x", lincheck::Value(0)));
+    events.push_back(opacity_event("tx_commit_success", 12, 1));
+    events.push_back(opacity_event("tx_location_destroy", 20, 0, "x"));
+    events.push_back(opacity_event("tx_location_register", 21, 0, "x"));
+    events.back().label = "slot";
+    events.push_back(opacity_event("tx_location_init", 22, 0, "x", lincheck::Value(10)));
+    events.push_back(opacity_event("tx_begin", 30, 2));
+    events.push_back(opacity_event("tx_read", 31, 2, "x", lincheck::Value(10)));
+    events.push_back(opacity_event("tx_commit_success", 32, 2));
+
+    const auto history = lincheck::build_stm_opacity_history(events, strict_lifetime_build_options());
+    require(history.success(), "safe location reuse after quiescent destroy should build");
+    require(
+        history.history.lifetime_policy == lincheck::StmLifetimePolicy::strict_lifetimes,
+        "safe generation reuse test should exercise strict lifetime mode"
+    );
+    require(history.history.locations.size() == 2, "safe address reuse should create two location generations");
+    require(
+        history.history.locations.find("x") != history.history.locations.end() &&
+            history.history.locations.find("x#gen1") != history.history.locations.end(),
+        "safe address reuse should retain old and new generation IDs"
+    );
+    require(history.history.locations.at("x").destroyed, "old location generation should be marked destroyed");
+    require(history.history.locations.at("x#gen1").generation == 1, "new location should report generation 1");
+
+    const auto verification = lincheck::verify_stm_opacity(history.history);
+    require(verification.success(), "safe location generations should verify independently");
+
+    const auto json = lincheck::format_stm_opacity_history_json(history.history, &verification);
+    require(json.find("\"location_id\": \"x#gen1\"") != std::string::npos, "reuse JSON should include new generation id");
+    require(json.find("\"generation\": 1") != std::string::npos, "reuse JSON should include generation number");
+}
+
+void opacity_history_builder_rejects_unsafe_location_lifetime_reuse() {
+    std::vector<lincheck::StmEventRecord> read_destroyed_events;
+    read_destroyed_events.push_back(opacity_event("tx_location_init", 1, 0, "x", lincheck::Value(0)));
+    read_destroyed_events.push_back(opacity_event("tx_location_destroy", 2, 0, "x"));
+    read_destroyed_events.push_back(opacity_event("tx_begin", 10, 1));
+    read_destroyed_events.push_back(opacity_event("tx_read", 11, 1, "x", lincheck::Value(0)));
+    read_destroyed_events.push_back(opacity_event("tx_abort", 12, 1));
+
+    const auto read_destroyed_history = lincheck::build_stm_opacity_history(
+        read_destroyed_events,
+        strict_lifetime_build_options()
+    );
+    require(!read_destroyed_history.success(), "opacity builder should reject reads from destroyed locations");
+    require(
+        read_destroyed_history.explanation.find("destroyed location") != std::string::npos,
+        "destroyed-location access diagnostic should be explicit"
+    );
+
+    std::vector<lincheck::StmEventRecord> live_destroy_events;
+    live_destroy_events.push_back(opacity_event("tx_location_init", 1, 0, "x", lincheck::Value(0)));
+    live_destroy_events.push_back(opacity_event("tx_begin", 10, 1));
+    live_destroy_events.push_back(opacity_event("tx_read", 11, 1, "x", lincheck::Value(0)));
+    live_destroy_events.push_back(opacity_event("tx_location_destroy", 12, 0, "x"));
+    live_destroy_events.push_back(opacity_event("tx_abort", 13, 1));
+
+    const auto live_destroy_history = lincheck::build_stm_opacity_history(
+        live_destroy_events,
+        strict_lifetime_build_options()
+    );
+    require(!live_destroy_history.success(), "opacity builder should reject destroy while transactions are live");
+    require(
+        live_destroy_history.explanation.find("transactions were live") != std::string::npos,
+        "live destroy diagnostic should explain the quiescent lifetime requirement"
+    );
+}
+
+void opacity_history_builder_default_policy_ignores_raw_destroyed_access() {
+    std::vector<lincheck::StmEventRecord> events;
+    events.push_back(opacity_event("tx_location_init", 1, 0, "x", lincheck::Value(0)));
+    events.push_back(opacity_event("tx_location_destroy", 2, 0, "x"));
+    events.push_back(opacity_event("tx_begin", 10, 1));
+    events.push_back(opacity_event("tx_read", 11, 1, "x", lincheck::Value(0)));
+    events.push_back(opacity_event("tx_abort", 12, 1));
+
+    const auto history = lincheck::build_stm_opacity_history(events);
+    require(history.success(), "default opacity policy should not reject raw destroyed-location access");
+    require(
+        history.history.lifetime_policy == lincheck::StmLifetimePolicy::value_history_only,
+        "default opacity history should use value-history-only lifetime policy"
+    );
+    require(
+        history.ignored_lifetime_anomalies > 0 &&
+            history.history.ignored_lifetime_anomalies == history.ignored_lifetime_anomalies,
+        "default opacity policy should report ignored raw lifetime anomalies"
+    );
+
+    const auto verification = lincheck::verify_stm_opacity(history.history);
+    require(verification.success(), "destroyed raw access reading the retained value should remain opaque by value");
+    require(
+        verification.ignored_lifetime_anomalies == history.ignored_lifetime_anomalies,
+        "verification result should retain ignored lifetime anomaly counters"
+    );
+
+    const auto json = lincheck::format_stm_opacity_history_json(history.history, &verification);
+    require(
+        json.find("\"lifetime_policy\": \"value_history_only\"") != std::string::npos,
+        "opacity JSON should report the default lifetime policy"
+    );
+    require(
+        json.find("\"ignored_lifetime_anomalies\": ") != std::string::npos,
+        "opacity JSON should report ignored lifetime anomaly counters"
+    );
+}
+
+void opacity_history_builder_default_policy_keeps_checking_values_after_raw_reuse() {
+    std::vector<lincheck::StmEventRecord> events;
+    events.push_back(opacity_event("tx_location_init", 1, 0, "x", lincheck::Value(0)));
+    events.push_back(opacity_event("tx_begin", 10, 1));
+    events.push_back(opacity_event("tx_read", 11, 1, "x", lincheck::Value(0)));
+    events.push_back(opacity_event("tx_location_destroy", 12, 0, "x"));
+    events.push_back(opacity_event("tx_location_init", 13, 0, "x", lincheck::Value(10)));
+    events.push_back(opacity_event("tx_abort", 14, 1));
+    events.push_back(opacity_event("tx_begin", 20, 2));
+    events.push_back(opacity_event("tx_read", 21, 2, "x", lincheck::Value(10)));
+    events.push_back(opacity_event("tx_commit_success", 22, 2));
+
+    const auto history = lincheck::build_stm_opacity_history(events);
+    require(history.success(), "default opacity policy should build raw reuse while transactions are live");
+    require(history.ignored_lifetime_anomalies >= 2, "raw live reuse should report ignored lifetime anomalies");
+    require(history.history.locations.size() == 1, "value-history-only raw reuse should keep one logical location");
+
+    const auto verification = lincheck::verify_stm_opacity(history.history);
+    require(!verification.success(), "downstream non-opaque raw reuse values should still be caught");
+    require(
+        verification.status == lincheck::StmOpacityStatus::violation,
+        "raw reuse value failure should be an opacity violation, not malformed history"
+    );
+    require(
+        verification.explanation.find("read") != std::string::npos ||
+            verification.explanation.find("observed") != std::string::npos,
+        "raw reuse value failure should include a value-read diagnostic"
+    );
+}
+
+struct EmbeddedOpacityObject : lincheck::tx_object<EmbeddedOpacityObject> {
+    lincheck::tx_field<int> value;
+
+    explicit EmbeddedOpacityObject(int initial)
+        : value(lc_object_handle(), "value", initial) {}
+};
+
+void opacity_history_builder_accepts_embedded_tx_fields_with_object_lifetime_handles() {
+    const auto recorded = record_stm_history([&] {
+        EmbeddedOpacityObject object(0);
+        lincheck::stm::tx_begin(false);
+        object.value.set(1);
+        lincheck::stm::tx_commit_success();
+        lincheck::stm::tx_begin(true);
+        const int observed = object.value.get();
+        require(observed == 1, "embedded tx_field should return the stored value");
+        lincheck::stm::tx_commit_success();
+    });
+
+    const auto history = lincheck::build_stm_opacity_history(recorded.stm_events);
+    require(history.success(), "embedded tx_field handle history should build");
+    require(history.history.locations.size() == 1, "embedded tx_field should register one logical location");
+    const auto& location = history.history.locations.begin()->second;
+    require(location.identity_kind == "object_lifetime_field", "embedded tx_field should use object/field identity");
+    require(!location.location_handle_id.empty(), "embedded tx_field should retain a location handle");
+    require(!location.object_lifetime_id.empty(), "embedded tx_field should retain an object lifetime id");
+    require(location.has_object_lifetime_generation, "embedded tx_field should retain object generation metadata");
+    require(location.field_id == "value", "embedded tx_field should retain field identity");
+    require(location.destroyed, "embedded tx_field destruction should emit a destroy hook");
+
+    const auto verification = lincheck::verify_stm_opacity(history.history);
+    require(verification.success(), "embedded tx_field history should verify");
+
+    const auto json = lincheck::format_stm_opacity_history_json(history.history, &verification);
+    require(json.find("\"identity_kind\": \"object_lifetime_field\"") != std::string::npos, "handle JSON should include identity kind");
+    require(json.find("\"object_lifetime_id\"") != std::string::npos, "handle JSON should include object lifetime IDs");
+    require(json.find("\"field_id\": \"value\"") != std::string::npos, "handle JSON should include field IDs");
+    const auto dot = lincheck::format_stm_opacity_history_dot(history.history, &verification, "object field opacity");
+    require(dot.find("identity=object_lifetime_field") != std::string::npos, "handle DOT should include identity kind");
+    require(dot.find("field=value") != std::string::npos, "handle DOT should include field IDs");
+}
+
+void opacity_history_builder_accepts_standalone_tx_field_as_self_owned_location() {
+    const auto recorded = record_stm_history([&] {
+        lincheck::tx_field<int> counter(0);
+        lincheck::stm::tx_begin(false);
+        counter.set(2);
+        lincheck::stm::tx_commit_success();
+        lincheck::stm::tx_begin(true);
+        const int observed = counter.get();
+        require(observed == 2, "standalone tx_field should return the stored value");
+        lincheck::stm::tx_commit_success();
+    });
+
+    const auto history = lincheck::build_stm_opacity_history(recorded.stm_events);
+    require(history.success(), "standalone tx_field handle history should build");
+    require(history.history.locations.size() == 1, "standalone tx_field should register one location");
+    const auto& location = history.history.locations.begin()->second;
+    require(location.identity_kind == "object_lifetime_field", "standalone tx_field should use self-owned object identity");
+    require(location.field_id == "self", "standalone tx_field should use the field object as its allocation unit");
+    require(!location.object_lifetime_id.empty(), "standalone tx_field should have an object lifetime id");
+    require(lincheck::verify_stm_opacity(history.history).success(), "standalone tx_field history should verify");
+}
+
+struct ReusedOpacityObject : lincheck::tx_object<ReusedOpacityObject> {
+    lincheck::tx_field<int> value;
+
+    explicit ReusedOpacityObject(int initial)
+        : value(lc_object_handle(), "value", initial) {}
+};
+
+void opacity_history_builder_accepts_non_quiescent_reuse_with_distinct_handles() {
+    std::string first_handle;
+    std::string second_handle;
+    const auto recorded = record_stm_history([&] {
+        alignas(ReusedOpacityObject) unsigned char storage[sizeof(ReusedOpacityObject)];
+        auto* first = new (storage) ReusedOpacityObject(0);
+        first_handle = first->value.lc_location_handle().id;
+
+        lincheck::stm::tx_begin(true);
+        require(first->value.get() == 0, "first object lifetime should read its initial value");
+        first->~ReusedOpacityObject();
+
+        auto* second = new (storage) ReusedOpacityObject(10);
+        second_handle = second->value.lc_location_handle().id;
+        lincheck::stm::tx_abort("old lifetime observer");
+
+        lincheck::stm::tx_begin(true);
+        require(second->value.get() == 10, "second object lifetime should read its initial value");
+        lincheck::stm::tx_commit_success();
+        second->~ReusedOpacityObject();
+    });
+
+    require(first_handle != second_handle, "address reuse should create distinct explicit location handles");
+    const auto history = lincheck::build_stm_opacity_history(recorded.stm_events);
+    require(history.success(), "non-quiescent explicit-handle reuse should build");
+    require(history.history.locations.size() == 2, "explicit-handle reuse should retain both lifetimes");
+    require(
+        history.history.locations.find(first_handle) != history.history.locations.end() &&
+            history.history.locations.find(second_handle) != history.history.locations.end(),
+        "explicit-handle reuse should use handle IDs as location IDs"
+    );
+    const auto& first = history.history.locations.at(first_handle);
+    const auto& second = history.history.locations.at(second_handle);
+    require(first.address_id == second.address_id, "placement reuse should report the same field address");
+    require(first.object_lifetime_id != second.object_lifetime_id, "reused objects should have distinct object lifetimes");
+    require(
+        first.has_object_lifetime_generation && second.has_object_lifetime_generation &&
+            first.object_lifetime_generation != second.object_lifetime_generation,
+        "reused objects should have distinct object generations"
+    );
+    require(first.destroyed && second.destroyed, "both explicit lifetimes should be destroyed");
+    require(lincheck::verify_stm_opacity(history.history).success(), "explicit-handle reuse should verify");
+}
+
+void opacity_history_builder_rejects_raw_reuse_after_explicit_handle_while_live() {
+    std::vector<lincheck::StmEventRecord> events;
+    events.push_back(opacity_handle_event(
+        "tx_location_init",
+        1,
+        0,
+        "objlife#old.value",
+        "slot",
+        lincheck::Value(0),
+        "objlife#old",
+        0,
+        "value"
+    ));
+    events.push_back(opacity_event("tx_begin", 10, 1));
+    events.push_back(opacity_handle_event(
+        "tx_read",
+        11,
+        1,
+        "objlife#old.value",
+        "slot",
+        lincheck::Value(0),
+        "objlife#old",
+        0,
+        "value"
+    ));
+    events.push_back(opacity_handle_event(
+        "tx_location_destroy",
+        12,
+        0,
+        "objlife#old.value",
+        "slot",
+        std::nullopt,
+        "objlife#old",
+        0,
+        "value"
+    ));
+    events.push_back(opacity_event("tx_location_init", 13, 0, "slot", lincheck::Value(10)));
+    events.push_back(opacity_event("tx_abort", 14, 1));
+
+    const auto history = lincheck::build_stm_opacity_history(events, strict_lifetime_build_options());
+    require(!history.success(), "raw reuse after explicit handle while live should remain malformed");
+    require(
+        history.explanation.find("stable handle") != std::string::npos,
+        "raw-after-explicit diagnostic should explain stable-handle requirement"
+    );
+}
+
+void opacity_history_builder_accepts_mixed_raw_and_handle_locations() {
+    std::vector<lincheck::StmEventRecord> events;
+    events.push_back(opacity_event("tx_location_init", 1, 0, "raw", lincheck::Value(0)));
+    events.push_back(opacity_handle_event(
+        "tx_location_init",
+        2,
+        0,
+        "objlife#owner.value",
+        "handled",
+        lincheck::Value(0),
+        "objlife#owner",
+        0,
+        "value"
+    ));
+    events.push_back(opacity_event("tx_begin", 10, 1));
+    events.push_back(opacity_event("tx_write", 11, 1, "raw", lincheck::Value(1)));
+    events.push_back(opacity_handle_event(
+        "tx_write",
+        12,
+        1,
+        "objlife#owner.value",
+        "handled",
+        lincheck::Value(2),
+        "objlife#owner",
+        0,
+        "value"
+    ));
+    events.push_back(opacity_event("tx_commit_success", 13, 1));
+
+    const auto history = lincheck::build_stm_opacity_history(events);
+    require(history.success(), "mixed raw and explicit handle histories should build for distinct locations");
+    require(history.history.locations.size() == 2, "mixed history should retain both locations");
+    require(history.history.locations.at("raw").identity_kind == "raw_address_generation", "raw location should keep raw identity");
+    require(
+        history.history.locations.at("objlife#owner.value").identity_kind == "object_lifetime_field",
+        "handle location should keep object/field identity"
+    );
+    require(lincheck::verify_stm_opacity(history.history).success(), "mixed raw/handle history should verify");
+}
+
+void opacity_backend_location_registry_supports_non_intrusive_reuse_handles() {
+    int owner = 0;
+    int field = 0;
+    const auto direct_location = lincheck::stm::make_backend_location_handle(
+        "toy-stm",
+        "allocation:node-1",
+        &field,
+        "value",
+        "value",
+        "int",
+        7,
+        &owner
+    );
+    require(direct_location.object.id.find("backend#toy-stm#allocation_node-1#gen7") != std::string::npos,
+        "backend helper should include sanitized backend allocation ID and generation");
+    require(direct_location.object.address == &owner, "backend helper should retain optional object address");
+    require(direct_location.address == &field, "backend helper should retain field address");
+    require(direct_location.field_id == "value", "backend helper should retain field ID");
+
+    const auto recorded = record_stm_history([&] {
+        lincheck::stm::BackendLocationRegistry registry("toy-stm");
+        int storage = 0;
+
+        auto old_location = registry.get_or_create_location(&storage, &storage, "value", "value", "int");
+        lincheck::stm::tx_location_register(old_location);
+        lincheck::stm::tx_location_init(old_location, 0);
+        lincheck::stm::tx_begin(true);
+        lincheck::stm::tx_read_value(old_location, 0);
+
+        auto destroyed_old = registry.destroy_location(&storage);
+        require(destroyed_old.has_value(), "backend registry should destroy the old location");
+        lincheck::stm::tx_location_destroy(*destroyed_old);
+
+        auto new_location = registry.get_or_create_location(&storage, &storage, "value", "value", "int");
+        lincheck::stm::tx_location_register(new_location);
+        lincheck::stm::tx_location_init(new_location, 10);
+        lincheck::stm::tx_abort("old observer");
+
+        lincheck::stm::tx_begin(true);
+        lincheck::stm::tx_read_value(new_location, 10);
+        lincheck::stm::tx_commit_success();
+
+        auto destroyed_new = registry.destroy_location(&storage);
+        require(destroyed_new.has_value(), "backend registry should destroy the new location");
+        lincheck::stm::tx_location_destroy(*destroyed_new);
+    });
+
+    const auto history = lincheck::build_stm_opacity_history(recorded.stm_events);
+    require(history.success(), "backend registry explicit-handle reuse should build");
+    require(history.history.locations.size() == 2, "backend registry reuse should create two logical locations");
+
+    std::vector<std::string> location_ids;
+    for (const auto& [location_id, location] : history.history.locations) {
+        location_ids.push_back(location_id);
+        require(location.identity_kind == "object_lifetime_field", "backend registry locations should use object/field identity");
+        require(location.object_lifetime_id.find("backend#toy-stm#") == 0, "backend registry should use backend lifetime IDs");
+        require(location.field_id == "value", "backend registry should preserve field identity");
+        require(location.destroyed, "backend registry destroy hooks should mark each lifetime destroyed");
+    }
+    require(location_ids[0] != location_ids[1], "backend registry reuse should use distinct handles");
+
+    const auto verification = lincheck::verify_stm_opacity(history.history);
+    require(verification.success(), "backend registry explicit-handle reuse should verify");
+}
+
+void opacity_verifier_reports_committed_order_search_limit() {
+    std::vector<lincheck::StmEventRecord> events;
+    events.push_back(opacity_event("tx_location_init", 1, 0, "x", lincheck::Value(0)));
+    events.push_back(opacity_event("tx_location_init", 2, 0, "y", lincheck::Value(0)));
+    events.push_back(opacity_event("tx_begin", 10, 1));
+    events.push_back(opacity_event("tx_write", 20, 1, "x", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_commit_success", 100, 1));
+    events.push_back(opacity_event("tx_begin", 11, 2));
+    events.push_back(opacity_event("tx_write", 21, 2, "y", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_commit_success", 101, 2));
+    events.push_back(opacity_event("tx_begin", 12, 3));
+    events.push_back(opacity_event("tx_read", 30, 3, "y", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_read", 31, 3, "x", lincheck::Value(0)));
+    events.push_back(opacity_event("tx_abort", 40, 3));
+
+    const auto history = lincheck::build_stm_opacity_history(events);
+    require(history.success(), "search-limit history should be well formed");
+    const auto bounded = lincheck::verify_stm_opacity(
+        history.history,
+        lincheck::StmOpacityVerificationOptions{.max_committed_orders = 1}
+    );
+    require(!bounded.success(), "opacity verifier should fail when the committed-order limit is reached");
+    require(
+        bounded.status == lincheck::StmOpacityStatus::search_limit_exceeded,
+        "bounded opacity verification should report search-limit status"
+    );
+    require(bounded.search_limit_exceeded, "bounded opacity result should retain the limit flag");
+    require(bounded.committed_order_search_limit == 1, "bounded opacity result should retain the limit value");
+
+    const auto unbounded = lincheck::verify_stm_opacity(history.history);
+    require(unbounded.success(), "unbounded opacity verification should find the alternate committed order");
+    require(
+        unbounded.committed_order_search_space_upper_bound >= 2,
+        "unbounded opacity result should report the committed-order search space"
+    );
+}
+
+void opacity_verifier_memoizes_failed_committed_prefixes() {
+    std::vector<lincheck::StmEventRecord> events;
+    events.push_back(opacity_event("tx_location_init", 1, 0, "x", lincheck::Value(0)));
+    events.push_back(opacity_event("tx_location_init", 2, 0, "y", lincheck::Value(0)));
+    events.push_back(opacity_event("tx_location_init", 3, 0, "z", lincheck::Value(0)));
+    events.push_back(opacity_event("tx_begin", 10, 1));
+    events.push_back(opacity_event("tx_write", 11, 1, "x", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_commit_success", 100, 1));
+    events.push_back(opacity_event("tx_begin", 11, 2));
+    events.push_back(opacity_event("tx_write", 12, 2, "y", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_commit_success", 101, 2));
+    events.push_back(opacity_event("tx_begin", 12, 3));
+    events.push_back(opacity_event("tx_write", 31, 3, "z", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_read", 32, 3, "z", lincheck::Value(0)));
+    events.push_back(opacity_event("tx_commit_success", 102, 3));
+
+    const auto history = lincheck::build_stm_opacity_history(events);
+    require(history.success(), "memoized-prefix history should be well formed");
+    const auto verification = lincheck::verify_stm_opacity(history.history);
+    require(!verification.success(), "memoized-prefix history should still violate opacity");
+    require(
+        verification.committed_order_memo_entries > 0,
+        "opacity verifier should memoize failed committed prefixes"
+    );
+    require(
+        verification.committed_order_prefixes_pruned > 0,
+        "opacity verifier should prune repeated failed committed prefixes"
+    );
+    require(
+        verification.explanation.find("serial state=") != std::string::npos ||
+            verification.explanation.find("with state") != std::string::npos,
+        "memoized-prefix diagnostic should include state context"
+    );
+}
+
+void opacity_verifier_uses_read_from_constraints_to_prune_committed_orders() {
+    std::vector<lincheck::StmEventRecord> events;
+    events.push_back(opacity_event("tx_location_init", 1, 0, "x", lincheck::Value(0)));
+    events.push_back(opacity_event("tx_location_init", 2, 0, "y", lincheck::Value(0)));
+    events.push_back(opacity_event("tx_begin", 10, 3));
+    events.push_back(opacity_event("tx_read", 30, 3, "x", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_read", 31, 3, "y", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_commit_success", 102, 3));
+    events.push_back(opacity_event("tx_begin", 11, 1));
+    events.push_back(opacity_event("tx_write", 20, 1, "x", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_commit_success", 100, 1));
+    events.push_back(opacity_event("tx_begin", 12, 2));
+    events.push_back(opacity_event("tx_write", 21, 2, "y", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_commit_success", 101, 2));
+
+    const auto history = lincheck::build_stm_opacity_history(events);
+    require(history.success(), "read-from pruning history should be well formed");
+    const auto verification = lincheck::verify_stm_opacity(history.history);
+    require(verification.success(), "read-from pruning history should be opaque");
+    require(
+        verification.read_from_constraints >= 2,
+        "opacity verifier should derive read-from ordering constraints"
+    );
+    require(
+        verification.ordering_graph_edges >= verification.read_from_constraints,
+        "opacity verifier should retain derived ordering edges"
+    );
+    require(
+        verification.ordering_graph_candidate_prunes > 0,
+        "opacity verifier should prune candidates blocked by read-from predecessors"
+    );
+    require(
+        verification.committed_order.size() == 3 && verification.committed_order.back() == 3,
+        "reader should be serialized after the unique writers"
+    );
+}
+
+void opacity_verifier_rejects_read_from_ordering_cycles_before_search() {
+    std::vector<lincheck::StmEventRecord> events;
+    events.push_back(opacity_event("tx_location_init", 1, 0, "x", lincheck::Value(0)));
+    events.push_back(opacity_event("tx_location_init", 2, 0, "y", lincheck::Value(0)));
+    events.push_back(opacity_event("tx_begin", 10, 1));
+    events.push_back(opacity_event("tx_write", 20, 1, "x", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_read", 21, 1, "y", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_commit_success", 100, 1));
+    events.push_back(opacity_event("tx_begin", 11, 2));
+    events.push_back(opacity_event("tx_write", 22, 2, "y", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_read", 23, 2, "x", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_commit_success", 101, 2));
+
+    const auto history = lincheck::build_stm_opacity_history(events);
+    require(history.success(), "read-from cycle history should be well formed");
+    const auto verification = lincheck::verify_stm_opacity(history.history);
+    require(!verification.success(), "mutual read-from dependency should violate opacity");
+    require(
+        verification.ordering_graph_cycle,
+        "opacity verifier should report an ordering graph cycle"
+    );
+    require(
+        verification.committed_orders_explored == 0,
+        "opacity verifier should reject ordering cycles before committed-order search"
+    );
+    require(
+        verification.explanation.find("cycle") != std::string::npos ||
+            verification.explanation.find("cyclic") != std::string::npos,
+        "read-from cycle diagnostic should mention the cycle"
+    );
+    require(
+        verification.explanation.find("cycle contributors") != std::string::npos,
+        "read-from cycle diagnostic should include cycle contributors"
+    );
+    require(
+        verification.explanation.find("unique read-from writer") != std::string::npos,
+        "read-from cycle diagnostic should include read-from edge reasons"
+    );
+}
+
+void opacity_verifier_accepts_repeated_logical_transaction_attempts() {
+    auto logical_event = [](
+        std::string kind,
+        std::size_t event_index,
+        std::uint64_t tx_id,
+        std::uint64_t logical_id,
+        int attempt,
+        std::string address_id = {},
+        std::optional<lincheck::Value> value = std::nullopt
+    ) {
+        auto event = opacity_event(std::move(kind), event_index, tx_id, std::move(address_id), std::move(value));
+        event.logical_transaction_id = logical_id;
+        event.attempt = attempt;
+        return event;
+    };
+
+    std::vector<lincheck::StmEventRecord> events;
+    events.push_back(opacity_event("tx_location_init", 1, 0, "x", lincheck::Value(0)));
+    events.push_back(logical_event("tx_begin", 10, 1, 77, 1));
+    events.push_back(logical_event("tx_read", 11, 1, 77, 1, "x", lincheck::Value(0)));
+    events.push_back(logical_event("tx_abort", 12, 1, 77, 1));
+    events.push_back(logical_event("tx_retry", 13, 1, 77, 2));
+    events.push_back(logical_event("tx_begin", 20, 2, 77, 2));
+    events.push_back(logical_event("tx_write", 21, 2, 77, 2, "x", lincheck::Value(1)));
+    events.push_back(logical_event("tx_commit_success", 30, 2, 77, 2));
+    events.push_back(logical_event("tx_begin", 40, 3, 88, 1));
+    events.push_back(logical_event("tx_read", 41, 3, 88, 1, "x", lincheck::Value(1)));
+    events.push_back(logical_event("tx_commit_success", 50, 3, 88, 1));
+
+    const auto history = lincheck::build_stm_opacity_history(events);
+    require(history.success(), "repeated logical-attempt history should be well formed");
+    const auto verification = lincheck::verify_stm_opacity(history.history);
+    require(verification.success(), "consistent repeated logical attempts should satisfy opacity");
+    require(
+        std::any_of(verification.read_from_witnesses.begin(), verification.read_from_witnesses.end(), [](const auto& witness) {
+            return witness.find("tx#2/logical#77/attempt#2") != std::string::npos;
+        }),
+        "read-from witness should preserve logical transaction and retry attempt labels"
+    );
+}
+
+void opacity_verifier_reports_ambiguous_read_from_candidates() {
+    std::vector<lincheck::StmEventRecord> events;
+    events.push_back(opacity_event("tx_location_init", 1, 0, "x", lincheck::Value(0)));
+    events.push_back(opacity_event("tx_begin", 10, 3));
+    events.push_back(opacity_event("tx_read", 30, 3, "x", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_commit_success", 102, 3));
+    events.push_back(opacity_event("tx_begin", 11, 1));
+    events.push_back(opacity_event("tx_write", 20, 1, "x", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_commit_success", 100, 1));
+    events.push_back(opacity_event("tx_begin", 12, 2));
+    events.push_back(opacity_event("tx_write", 21, 2, "x", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_commit_success", 101, 2));
+
+    const auto history = lincheck::build_stm_opacity_history(events);
+    require(history.success(), "ambiguous read-from history should be well formed");
+    const auto verification = lincheck::verify_stm_opacity(history.history);
+    require(verification.success(), "ambiguous but serializable read-from history should satisfy opacity");
+    require(
+        verification.read_from_constraints == 0,
+        "ambiguous read-from choices should not add non-disjunctive ordering constraints"
+    );
+    require(
+        verification.ambiguous_read_from_constraints == 1,
+        "ambiguous read-from should add a disjunctive source-before-reader constraint"
+    );
+    require(
+        verification.ambiguous_read_from_candidate_prunes > 0,
+        "ambiguous read-from constraint should prune readers with no placed source"
+    );
+    require(
+        std::any_of(verification.read_from_witnesses.begin(), verification.read_from_witnesses.end(), [](const auto& witness) {
+            return witness.find("matching committed final writers=tx#1") != std::string::npos &&
+                witness.find("tx#2") != std::string::npos;
+        }),
+        "ambiguous read-from diagnostic should list both matching writers"
+    );
+    require(
+        !verification.ambiguous_read_from_samples.empty(),
+        "ambiguous read-from diagnostic should retain disjunctive source samples"
+    );
+}
+
+void opacity_verifier_prunes_ambiguous_read_from_overwritten_prefixes() {
+    std::vector<lincheck::StmEventRecord> events;
+    events.push_back(opacity_event("tx_location_init", 1, 0, "x", lincheck::Value(0)));
+    events.push_back(opacity_event("tx_begin", 10, 1));
+    events.push_back(opacity_event("tx_write", 40, 1, "x", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_begin", 11, 4));
+    events.push_back(opacity_event("tx_write", 41, 4, "x", lincheck::Value(2)));
+    events.push_back(opacity_event("tx_begin", 12, 3));
+    events.push_back(opacity_event("tx_read", 42, 3, "x", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_begin", 13, 2));
+    events.push_back(opacity_event("tx_write", 43, 2, "x", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_commit_success", 100, 1));
+    events.push_back(opacity_event("tx_commit_success", 101, 4));
+    events.push_back(opacity_event("tx_commit_success", 102, 3));
+    events.push_back(opacity_event("tx_commit_success", 103, 2));
+
+    const auto history = lincheck::build_stm_opacity_history(events);
+    require(history.success(), "overwritten ambiguous read-from history should be well formed");
+    const auto verification = lincheck::verify_stm_opacity(history.history);
+    require(verification.success(), "overwritten-prefix ambiguous history should still have a valid committed order");
+    require(
+        verification.ambiguous_read_from_constraints == 1,
+        "overwritten ambiguous read should add one disjunctive constraint"
+    );
+    require(
+        verification.ambiguous_read_from_candidate_prunes > 0,
+        "overwritten ambiguous read should prune at least one candidate prefix"
+    );
+    require(
+        std::any_of(verification.rejected_prefix_samples.begin(), verification.rejected_prefix_samples.end(), [](const auto& sample) {
+            return sample.find("latest placed writer") != std::string::npos &&
+                sample.find("overwrites ambiguous sources") != std::string::npos;
+        }),
+        "overwritten ambiguous diagnostic should identify the conflicting latest writer"
+    );
+}
+
+void opacity_verifier_eliminates_impossible_ambiguous_sources() {
+    std::vector<lincheck::StmEventRecord> events;
+    events.push_back(opacity_event("tx_location_init", 1, 0, "x", lincheck::Value(0)));
+    events.push_back(opacity_event("tx_begin", 10, 1));
+    events.push_back(opacity_event("tx_write", 40, 1, "x", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_begin", 20, 3));
+    events.push_back(opacity_event("tx_read", 21, 3, "x", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_commit_success", 30, 3));
+    events.push_back(opacity_event("tx_begin", 50, 2));
+    events.push_back(opacity_event("tx_write", 51, 2, "x", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_commit_success", 100, 1));
+    events.push_back(opacity_event("tx_commit_success", 110, 2));
+
+    const auto history = lincheck::build_stm_opacity_history(events);
+    require(history.success(), "source-elimination ambiguous history should be well formed");
+    const auto verification = lincheck::verify_stm_opacity(history.history);
+    require(verification.success(), "source-elimination ambiguous history should be opaque");
+    require(
+        verification.ambiguous_read_from_sources_eliminated == 1,
+        "opacity verifier should eliminate the source that must occur after the reader"
+    );
+    require(
+        verification.ambiguous_read_from_promoted_constraints == 1,
+        "opacity verifier should promote the only remaining source to a normal read-from edge"
+    );
+    require(
+        verification.read_from_constraints >= 1,
+        "promoted ambiguous source should be counted as a read-from constraint"
+    );
+    require(
+        std::any_of(verification.ambiguous_read_from_samples.begin(), verification.ambiguous_read_from_samples.end(), [](const auto& sample) {
+            return sample.find("eliminated source tx#2") != std::string::npos;
+        }),
+        "source-elimination diagnostic should identify the eliminated source"
+    );
+    require(
+        std::any_of(verification.ambiguous_read_from_samples.begin(), verification.ambiguous_read_from_samples.end(), [](const auto& sample) {
+            return sample.find("promoted to non-disjunctive edge tx#1") != std::string::npos;
+        }),
+        "source-elimination diagnostic should identify the promoted source"
+    );
+}
+
+void opacity_verifier_eliminates_shadowed_ambiguous_sources() {
+    std::vector<lincheck::StmEventRecord> events;
+    events.push_back(opacity_event("tx_location_init", 1, 0, "x", lincheck::Value(0)));
+    events.push_back(opacity_event("tx_begin", 10, 1));
+    events.push_back(opacity_event("tx_write", 11, 1, "x", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_commit_success", 20, 1));
+    events.push_back(opacity_event("tx_begin", 30, 3));
+    events.push_back(opacity_event("tx_write", 31, 3, "x", lincheck::Value(2)));
+    events.push_back(opacity_event("tx_commit_success", 40, 3));
+    events.push_back(opacity_event("tx_begin", 45, 2));
+    events.push_back(opacity_event("tx_write", 46, 2, "x", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_begin", 50, 4));
+    events.push_back(opacity_event("tx_read", 51, 4, "x", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_commit_success", 100, 4));
+    events.push_back(opacity_event("tx_commit_success", 110, 2));
+
+    const auto history = lincheck::build_stm_opacity_history(events);
+    require(history.success(), "shadowed-source ambiguous history should be well formed");
+    const auto verification = lincheck::verify_stm_opacity(history.history);
+    require(verification.success(), "shadowed-source ambiguous history should remain serializable");
+    require(
+        verification.ambiguous_read_from_sources_shadowed == 1,
+        "opacity verifier should eliminate the source shadowed by a forced conflicting writer"
+    );
+    require(
+        verification.ambiguous_read_from_promoted_constraints == 1,
+        "shadowed-source pruning should promote the remaining viable source"
+    );
+    require(
+        std::any_of(verification.ambiguous_read_from_samples.begin(), verification.ambiguous_read_from_samples.end(), [](const auto& sample) {
+            return sample.find("conflicting writer tx#3") != std::string::npos &&
+                sample.find("forced between the source and reader") != std::string::npos;
+        }),
+        "shadowed-source diagnostic should identify the intervening conflicting writer"
+    );
+}
+
+void opacity_verifier_eliminates_initial_source_shadowed_by_conflict() {
+    std::vector<lincheck::StmEventRecord> events;
+    events.push_back(opacity_event("tx_location_init", 1, 0, "x", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_begin", 10, 1));
+    events.push_back(opacity_event("tx_write", 11, 1, "x", lincheck::Value(2)));
+    events.push_back(opacity_event("tx_commit_success", 20, 1));
+    events.push_back(opacity_event("tx_begin", 25, 2));
+    events.push_back(opacity_event("tx_write", 26, 2, "x", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_begin", 30, 3));
+    events.push_back(opacity_event("tx_read", 31, 3, "x", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_commit_success", 100, 3));
+    events.push_back(opacity_event("tx_commit_success", 110, 2));
+
+    const auto history = lincheck::build_stm_opacity_history(events);
+    require(history.success(), "initial-shadowed ambiguous history should be well formed");
+    const auto verification = lincheck::verify_stm_opacity(history.history);
+    require(verification.success(), "initial-shadowed ambiguous history should remain serializable");
+    require(
+        verification.ambiguous_read_from_initial_sources_eliminated == 1,
+        "opacity verifier should eliminate matching initial value when a conflict must precede the reader"
+    );
+    require(
+        verification.ambiguous_read_from_promoted_constraints == 1,
+        "initial-source elimination should promote the remaining committed source"
+    );
+    require(
+        std::any_of(verification.ambiguous_read_from_samples.begin(), verification.ambiguous_read_from_samples.end(), [](const auto& sample) {
+            return sample.find("eliminated matching initial source") != std::string::npos &&
+                sample.find("conflicting writer tx#1") != std::string::npos;
+        }),
+        "initial-source diagnostic should identify the forced conflicting writer"
+    );
+}
+
+void opacity_verifier_rejects_ambiguous_read_when_all_sources_eliminated() {
+    std::vector<lincheck::StmEventRecord> events;
+    events.push_back(opacity_event("tx_location_init", 1, 0, "x", lincheck::Value(0)));
+    events.push_back(opacity_event("tx_begin", 10, 1));
+    events.push_back(opacity_event("tx_read", 11, 1, "x", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_commit_success", 20, 1));
+    events.push_back(opacity_event("tx_begin", 30, 2));
+    events.push_back(opacity_event("tx_write", 31, 2, "x", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_commit_success", 40, 2));
+    events.push_back(opacity_event("tx_begin", 50, 3));
+    events.push_back(opacity_event("tx_write", 51, 3, "x", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_commit_success", 60, 3));
+
+    const auto history = lincheck::build_stm_opacity_history(events);
+    require(history.success(), "all-sources-eliminated ambiguous history should be well formed");
+    const auto verification = lincheck::verify_stm_opacity(history.history);
+    require(!verification.success(), "all ambiguous sources after the reader should violate opacity");
+    require(
+        verification.committed_orders_explored == 0,
+        "all-sources-eliminated history should fail before committed-order search"
+    );
+    require(
+        verification.ambiguous_read_from_sources_eliminated == 2,
+        "opacity verifier should eliminate every impossible committed source"
+    );
+    require(
+        verification.explanation.find("no viable committed source") != std::string::npos,
+        "all-sources-eliminated diagnostic should explain that no source remains"
+    );
+}
+
+void opacity_verifier_generated_larger_ambiguous_read_from_spaces() {
+    for (std::size_t matching_writers = 2; matching_writers <= 5; ++matching_writers) {
+        for (std::size_t conflicting_writers = 1; conflicting_writers <= 2; ++conflicting_writers) {
+            std::vector<lincheck::StmEventRecord> events;
+            events.push_back(opacity_event("tx_location_init", 1, 0, "x", lincheck::Value(0)));
+
+            std::uint64_t tx_id = 1;
+            std::size_t begin_event = 10;
+            std::size_t access_event = 50;
+            for (std::size_t i = 0; i < matching_writers; ++i, ++tx_id) {
+                events.push_back(opacity_event("tx_begin", begin_event++, tx_id));
+                events.push_back(opacity_event("tx_write", access_event++, tx_id, "x", lincheck::Value(1)));
+            }
+
+            const auto first_conflicting_tx = tx_id;
+            for (std::size_t i = 0; i < conflicting_writers; ++i, ++tx_id) {
+                events.push_back(opacity_event("tx_begin", begin_event++, tx_id));
+                events.push_back(opacity_event("tx_write", access_event++, tx_id, "x", lincheck::Value(2)));
+            }
+
+            const auto reader_tx = tx_id++;
+            events.push_back(opacity_event("tx_begin", begin_event++, reader_tx));
+            events.push_back(opacity_event("tx_read", access_event++, reader_tx, "x", lincheck::Value(1)));
+
+            for (std::uint64_t committed = 1; committed < tx_id; ++committed) {
+                events.push_back(opacity_event("tx_commit_success", 200 + static_cast<std::size_t>(committed), committed));
+            }
+
+            const auto history = lincheck::build_stm_opacity_history(events);
+            require(history.success(), "generated ambiguous read-from history should be well formed");
+            const auto verification = lincheck::verify_stm_opacity(history.history);
+            require(verification.success(), "generated ambiguous read-from history should be opaque");
+            require(
+                verification.ambiguous_read_from_constraints == 1,
+                "generated ambiguous read should retain one disjunctive choice"
+            );
+            require(
+                verification.ambiguous_read_from_candidate_prunes > 0,
+                "generated ambiguous read should prune invalid reader prefixes"
+            );
+            require(
+                std::any_of(verification.ambiguous_read_from_samples.begin(), verification.ambiguous_read_from_samples.end(), [&](const auto& sample) {
+                    return sample.find("tx#" + std::to_string(first_conflicting_tx)) != std::string::npos;
+                }),
+                "generated ambiguous diagnostics should include conflicting writer candidates"
+            );
+        }
+    }
+}
+
+void opacity_verifier_generated_seeded_ambiguous_read_from_matrix() {
+    std::uint64_t seed = 0x5eed20260706ULL;
+    auto next = [&] {
+        seed = seed * 6364136223846793005ULL + 1442695040888963407ULL;
+        return seed;
+    };
+
+    for (int case_index = 0; case_index < 12; ++case_index) {
+        const std::size_t matching_writers = 2 + static_cast<std::size_t>(next() % 4);
+        const std::size_t conflicting_writers = 1 + static_cast<std::size_t>(next() % 3);
+        const bool initial_matches = (next() % 3) == 0;
+        const bool reader_before_one_source = (next() % 2) == 0;
+
+        std::vector<lincheck::StmEventRecord> events;
+        events.push_back(opacity_event(
+            "tx_location_init",
+            1,
+            0,
+            "x",
+            lincheck::Value(initial_matches ? 1 : 0)
+        ));
+
+        std::uint64_t tx_id = 1;
+        std::size_t begin_event = 10;
+        std::size_t access_event = 100;
+        for (std::size_t i = 0; i < matching_writers; ++i, ++tx_id) {
+            events.push_back(opacity_event("tx_begin", begin_event++, tx_id));
+            events.push_back(opacity_event("tx_write", access_event++, tx_id, "x", lincheck::Value(1)));
+            if (reader_before_one_source && i + 1 == matching_writers) {
+                events.back().event_index = 220;
+                events.back().sequence = 220;
+            }
+        }
+
+        for (std::size_t i = 0; i < conflicting_writers; ++i, ++tx_id) {
+            events.push_back(opacity_event("tx_begin", begin_event++, tx_id));
+            events.push_back(opacity_event(
+                "tx_write",
+                access_event++,
+                tx_id,
+                "x",
+                lincheck::Value(2 + static_cast<int>(i))
+            ));
+        }
+
+        const auto reader_tx = tx_id++;
+        events.push_back(opacity_event("tx_begin", begin_event++, reader_tx));
+        events.push_back(opacity_event("tx_read", access_event++, reader_tx, "x", lincheck::Value(1)));
+
+        for (std::uint64_t committed = 1; committed < tx_id; ++committed) {
+            std::size_t commit_event = 300 + static_cast<std::size_t>(committed);
+            if (reader_before_one_source && committed == reader_tx) {
+                commit_event = 210;
+            }
+            events.push_back(opacity_event("tx_commit_success", commit_event, committed));
+        }
+
+        const auto history = lincheck::build_stm_opacity_history(events);
+        require(history.success(), "seeded ambiguous read-from history should be well formed");
+        const auto verification = lincheck::verify_stm_opacity(history.history);
+        require(verification.success(), "seeded ambiguous read-from history should be opaque");
+        require(
+            verification.ambiguous_read_from_constraints >= 1,
+            "seeded ambiguous read should retain ambiguous choice diagnostics"
+        );
+        if (!initial_matches) {
+            require(
+                verification.ambiguous_read_from_candidate_prunes > 0 ||
+                    verification.ambiguous_read_from_sources_eliminated > 0,
+                "seeded non-initial ambiguous read should prune or eliminate at least one candidate"
+            );
+        }
+    }
+}
+
+void opacity_verifier_generated_shadowed_source_matrix() {
+    for (std::size_t shadowed_sources = 1; shadowed_sources <= 5; ++shadowed_sources) {
+        std::vector<lincheck::StmEventRecord> events;
+        events.push_back(opacity_event("tx_location_init", 1, 0, "x", lincheck::Value(0)));
+
+        std::uint64_t tx_id = 1;
+        for (std::size_t i = 0; i < shadowed_sources; ++i) {
+            const auto source = tx_id++;
+            const auto conflict = tx_id++;
+            const auto base = 10 + i * 20;
+            events.push_back(opacity_event("tx_begin", base, source));
+            events.push_back(opacity_event("tx_write", base + 1, source, "x", lincheck::Value(1)));
+            events.push_back(opacity_event("tx_commit_success", base + 5, source));
+            events.push_back(opacity_event("tx_begin", base + 10, conflict));
+            events.push_back(opacity_event("tx_write", base + 11, conflict, "x", lincheck::Value(2)));
+            events.push_back(opacity_event("tx_commit_success", base + 15, conflict));
+        }
+
+        const auto rescue_source = tx_id++;
+        const auto reader = tx_id++;
+        events.push_back(opacity_event("tx_begin", 500, rescue_source));
+        events.push_back(opacity_event("tx_write", 501, rescue_source, "x", lincheck::Value(1)));
+        events.push_back(opacity_event("tx_begin", 510, reader));
+        events.push_back(opacity_event("tx_read", 511, reader, "x", lincheck::Value(1)));
+        events.push_back(opacity_event("tx_commit_success", 520, reader));
+        events.push_back(opacity_event("tx_commit_success", 530, rescue_source));
+
+        const auto history = lincheck::build_stm_opacity_history(events);
+        require(history.success(), "generated shadowed-source matrix history should be well formed");
+        const auto verification = lincheck::verify_stm_opacity(history.history);
+        require(verification.success(), "generated shadowed-source matrix should be opaque");
+        require(
+            verification.ambiguous_read_from_sources_shadowed == shadowed_sources,
+            "generated shadowed-source matrix should eliminate each forced-shadowed source"
+        );
+        require(
+            verification.ambiguous_read_from_promoted_constraints == 1,
+            "generated shadowed-source matrix should promote the rescue source"
+        );
+    }
+}
+
+void opacity_verifier_leaves_initial_matching_ambiguous_reads_to_serial_search() {
+    std::vector<lincheck::StmEventRecord> events;
+    events.push_back(opacity_event("tx_location_init", 1, 0, "x", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_begin", 10, 1));
+    events.push_back(opacity_event("tx_write", 20, 1, "x", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_commit_success", 100, 1));
+    events.push_back(opacity_event("tx_begin", 11, 2));
+    events.push_back(opacity_event("tx_write", 21, 2, "x", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_commit_success", 101, 2));
+    events.push_back(opacity_event("tx_begin", 12, 3));
+    events.push_back(opacity_event("tx_read", 30, 3, "x", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_commit_success", 102, 3));
+
+    const auto history = lincheck::build_stm_opacity_history(events);
+    require(history.success(), "initial-matching ambiguous read-from history should be well formed");
+    const auto verification = lincheck::verify_stm_opacity(history.history);
+    require(verification.success(), "initial-matching ambiguous read-from history should satisfy opacity");
+    require(
+        verification.ambiguous_read_from_constraints == 1,
+        "initial-matching ambiguous read should retain a conservative choice for diagnostics"
+    );
+    require(
+        std::any_of(verification.ambiguous_read_from_samples.begin(), verification.ambiguous_read_from_samples.end(), [](const auto& sample) {
+            return sample.find("source-before-reader pruning is skipped") != std::string::npos &&
+                sample.find("left to serial-state search") != std::string::npos;
+        }),
+        "initial-matching ambiguous diagnostic should explain the serial-state fallback"
+    );
+}
+
+void opacity_verifier_generated_retry_heavy_logical_histories() {
+    std::vector<lincheck::StmEventRecord> events;
+    events.push_back(opacity_event("tx_location_init", 1, 0, "x", lincheck::Value(0)));
+
+    std::uint64_t tx_id = 1;
+    std::size_t event_index = 10;
+    int committed_value = 0;
+    constexpr std::uint64_t logical_count = 6;
+    constexpr int aborted_attempts_per_logical = 3;
+    for (std::uint64_t logical_id = 100; logical_id < 100 + logical_count; ++logical_id) {
+        for (int attempt = 1; attempt <= aborted_attempts_per_logical; ++attempt) {
+            events.push_back(logical_opacity_event("tx_begin", event_index++, tx_id, logical_id, attempt));
+            events.push_back(logical_opacity_event(
+                "tx_read",
+                event_index++,
+                tx_id,
+                logical_id,
+                attempt,
+                "x",
+                lincheck::Value(committed_value)
+            ));
+            events.push_back(logical_opacity_event("tx_abort", event_index++, tx_id, logical_id, attempt));
+            events.push_back(logical_opacity_event("tx_retry", event_index++, tx_id, logical_id, attempt + 1));
+            ++tx_id;
+        }
+
+        const int next_value = committed_value + 1;
+        const int commit_attempt = aborted_attempts_per_logical + 1;
+        events.push_back(logical_opacity_event("tx_begin", event_index++, tx_id, logical_id, commit_attempt));
+        events.push_back(logical_opacity_event(
+            "tx_read",
+            event_index++,
+            tx_id,
+            logical_id,
+            commit_attempt,
+            "x",
+            lincheck::Value(committed_value)
+        ));
+        events.push_back(logical_opacity_event(
+            "tx_write",
+            event_index++,
+            tx_id,
+            logical_id,
+            commit_attempt,
+            "x",
+            lincheck::Value(next_value)
+        ));
+        events.push_back(logical_opacity_event("tx_commit_success", event_index++, tx_id, logical_id, commit_attempt));
+        ++tx_id;
+        committed_value = next_value;
+    }
+
+    const auto history = lincheck::build_stm_opacity_history(events);
+    require(history.success(), "generated retry-heavy logical history should be well formed");
+    const auto verification = lincheck::verify_stm_opacity(history.history);
+    require(verification.success(), "generated retry-heavy logical history should satisfy opacity");
+    require(
+        verification.observer_transaction_count == logical_count * aborted_attempts_per_logical,
+        "generated retry-heavy history should retain aborted retry attempts as observers"
+    );
+    require(
+        std::any_of(verification.read_from_witnesses.begin(), verification.read_from_witnesses.end(), [](const auto& witness) {
+            return witness.find("logical#105/attempt#4") != std::string::npos;
+        }),
+        "generated retry-heavy diagnostics should retain logical transaction attempt labels"
+    );
+}
+
+void opacity_verifier_generated_long_observer_chains() {
+    constexpr int observer_depth = 8;
+    std::vector<lincheck::StmEventRecord> events;
+    for (int location = 0; location <= observer_depth; ++location) {
+        events.push_back(opacity_event(
+            "tx_location_init",
+            static_cast<std::size_t>(location + 1),
+            0,
+            "x" + std::to_string(location),
+            lincheck::Value(0)
+        ));
+    }
+
+    events.push_back(opacity_event("tx_begin", 20, 1));
+    events.push_back(opacity_event("tx_write", 21, 1, "x0", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_commit_success", 22, 1));
+
+    for (int observer = 1; observer <= observer_depth; ++observer) {
+        const auto tx_id = static_cast<std::uint64_t>(observer + 1);
+        events.push_back(opacity_event("tx_begin", static_cast<std::size_t>(30 + observer * 3), tx_id));
+        events.push_back(opacity_event(
+            "tx_read",
+            static_cast<std::size_t>(31 + observer * 3),
+            tx_id,
+            "x" + std::to_string(observer - 1),
+            lincheck::Value(1)
+        ));
+        events.push_back(opacity_event(
+            "tx_write",
+            static_cast<std::size_t>(32 + observer * 3),
+            tx_id,
+            "x" + std::to_string(observer),
+            lincheck::Value(1)
+        ));
+        if (observer != observer_depth) {
+            events.push_back(opacity_event("tx_abort", static_cast<std::size_t>(33 + observer * 3), tx_id));
+        }
+    }
+
+    const auto history = lincheck::build_stm_opacity_history(events);
+    require(history.success(), "generated long observer-chain history should be well formed");
+    const auto verification = lincheck::verify_stm_opacity(history.history);
+    require(!verification.success(), "generated observer chain should reject dirty observer-to-observer reads");
+    require(
+        verification.observer_transaction_count == observer_depth,
+        "generated observer-chain history should retain all aborted/live observers"
+    );
+    require(
+        verification.explanation.find("observed 1") != std::string::npos,
+        "generated observer-chain diagnostic should include the dirty observed value"
+    );
+}
+
+std::vector<lincheck::StmEventRecord> generated_search_limit_history() {
+    std::vector<lincheck::StmEventRecord> events;
+    events.push_back(opacity_event("tx_location_init", 1, 0, "x", lincheck::Value(0)));
+    events.push_back(opacity_event("tx_location_init", 2, 0, "y", lincheck::Value(0)));
+    events.push_back(opacity_event("tx_begin", 10, 1));
+    events.push_back(opacity_event("tx_write", 20, 1, "x", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_commit_success", 100, 1));
+    events.push_back(opacity_event("tx_begin", 11, 2));
+    events.push_back(opacity_event("tx_write", 21, 2, "y", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_commit_success", 101, 2));
+    events.push_back(opacity_event("tx_begin", 12, 3));
+    events.push_back(opacity_event("tx_read", 30, 3, "y", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_read", 31, 3, "x", lincheck::Value(0)));
+    events.push_back(opacity_event("tx_abort", 102, 3));
+    return events;
+}
+
+std::vector<lincheck::StmEventRecord> generated_mixed_snapshot_history(bool impossible) {
+    std::vector<lincheck::StmEventRecord> events;
+    events.push_back(opacity_event("tx_location_init", 1, 0, "x", lincheck::Value(0)));
+    events.push_back(opacity_event("tx_location_init", 2, 0, "y", lincheck::Value(0)));
+    events.push_back(opacity_event("tx_begin", 10, 1));
+    events.push_back(opacity_event("tx_write", 20, 1, "x", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_commit_success", 100, 1));
+    events.push_back(opacity_event("tx_begin", 11, 2));
+    events.push_back(opacity_event("tx_write", 21, 2, "y", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_commit_success", 101, 2));
+    events.push_back(opacity_event("tx_begin", 12, 3));
+    events.push_back(opacity_event("tx_read", 30, 3, "x", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_read", 31, 3, "y", impossible ? lincheck::Value(0) : lincheck::Value(1)));
+    events.push_back(opacity_event("tx_commit_success", 102, 3));
+    if (impossible) {
+        events.push_back(opacity_event("tx_begin", 13, 4));
+        events.push_back(opacity_event("tx_read", 32, 4, "x", lincheck::Value(0)));
+        events.push_back(opacity_event("tx_read", 33, 4, "y", lincheck::Value(1)));
+        events.push_back(opacity_event("tx_commit_success", 103, 4));
+    }
+    return events;
+}
+
+std::vector<lincheck::StmEventRecord> generated_cycle_snapshot_history(std::size_t locations, bool impossible) {
+    std::vector<lincheck::StmEventRecord> events;
+    for (std::size_t location = 0; location < locations; ++location) {
+        events.push_back(opacity_event(
+            "tx_location_init",
+            1 + location,
+            0,
+            "x" + std::to_string(location),
+            lincheck::Value(0)
+        ));
+    }
+
+    std::uint64_t tx_id = 1;
+    for (std::size_t location = 0; location < locations; ++location, ++tx_id) {
+        events.push_back(opacity_event("tx_begin", 10 + location, tx_id));
+        events.push_back(opacity_event(
+            "tx_write",
+            100 + location,
+            tx_id,
+            "x" + std::to_string(location),
+            lincheck::Value(1)
+        ));
+    }
+
+    for (std::size_t reader = 0; reader < locations; ++reader, ++tx_id) {
+        const auto next_location = (reader + 1) % locations;
+        events.push_back(opacity_event("tx_begin", 50 + reader, tx_id));
+        events.push_back(opacity_event(
+            "tx_read",
+            200 + reader * 2,
+            tx_id,
+            "x" + std::to_string(reader),
+            lincheck::Value(1)
+        ));
+        events.push_back(opacity_event(
+            "tx_read",
+            201 + reader * 2,
+            tx_id,
+            "x" + std::to_string(next_location),
+            impossible ? lincheck::Value(0) : lincheck::Value(1)
+        ));
+    }
+
+    for (std::uint64_t committed = 1; committed < tx_id; ++committed) {
+        events.push_back(opacity_event("tx_commit_success", 500 + static_cast<std::size_t>(committed), committed));
+    }
+    return events;
+}
+
+std::vector<lincheck::StmEventRecord> generated_seeded_multi_reader_ambiguous_history(
+    std::uint64_t seed,
+    std::size_t locations,
+    std::size_t readers
+) {
+    auto next = [&] {
+        seed = seed * 2862933555777941757ULL + 3037000493ULL;
+        return seed;
+    };
+
+    std::vector<lincheck::StmEventRecord> events;
+    for (std::size_t location = 0; location < locations; ++location) {
+        events.push_back(opacity_event(
+            "tx_location_init",
+            1 + location,
+            0,
+            "a" + std::to_string(location),
+            lincheck::Value(0)
+        ));
+    }
+
+    std::uint64_t tx_id = 1;
+    std::size_t begin_index = 10;
+    std::size_t access_index = 100;
+    for (std::size_t location = 0; location < locations; ++location) {
+        const auto matching_writers = 2 + static_cast<std::size_t>(next() % 3);
+        for (std::size_t writer = 0; writer < matching_writers; ++writer, ++tx_id) {
+            events.push_back(opacity_event("tx_begin", begin_index++, tx_id));
+            events.push_back(opacity_event(
+                "tx_write",
+                access_index++,
+                tx_id,
+                "a" + std::to_string(location),
+                lincheck::Value(1)
+            ));
+        }
+
+        events.push_back(opacity_event("tx_begin", begin_index++, tx_id));
+        events.push_back(opacity_event(
+            "tx_write",
+            access_index++,
+            tx_id,
+            "a" + std::to_string(location),
+            lincheck::Value(2 + static_cast<int>(location))
+        ));
+        ++tx_id;
+    }
+
+    for (std::size_t reader = 0; reader < readers; ++reader, ++tx_id) {
+        events.push_back(opacity_event("tx_begin", begin_index++, tx_id));
+        for (std::size_t offset = 0; offset < locations; ++offset) {
+            const auto location = (reader + offset) % locations;
+            events.push_back(opacity_event(
+                "tx_read",
+                access_index++,
+                tx_id,
+                "a" + std::to_string(location),
+                lincheck::Value(1)
+            ));
+        }
+    }
+
+    for (std::uint64_t committed = 1; committed < tx_id; ++committed) {
+        events.push_back(opacity_event("tx_commit_success", 600 + static_cast<std::size_t>(committed), committed));
+    }
+    return events;
+}
+
+std::vector<lincheck::StmEventRecord> generated_larger_retry_history(
+    std::uint64_t logical_count,
+    int aborted_attempts_per_logical
+) {
+    std::vector<lincheck::StmEventRecord> events;
+    events.push_back(opacity_event("tx_location_init", 1, 0, "retry_x", lincheck::Value(0)));
+
+    std::uint64_t tx_id = 1;
+    std::size_t event_index = 10;
+    int committed_value = 0;
+    for (std::uint64_t logical_id = 1000; logical_id < 1000 + logical_count; ++logical_id) {
+        for (int attempt = 1; attempt <= aborted_attempts_per_logical; ++attempt) {
+            events.push_back(logical_opacity_event("tx_begin", event_index++, tx_id, logical_id, attempt));
+            events.push_back(logical_opacity_event(
+                "tx_read",
+                event_index++,
+                tx_id,
+                logical_id,
+                attempt,
+                "retry_x",
+                lincheck::Value(committed_value)
+            ));
+            events.push_back(logical_opacity_event("tx_abort", event_index++, tx_id, logical_id, attempt));
+            events.push_back(logical_opacity_event("tx_retry", event_index++, tx_id, logical_id, attempt + 1));
+            ++tx_id;
+        }
+
+        const int commit_attempt = aborted_attempts_per_logical + 1;
+        const int next_value = committed_value + 1;
+        events.push_back(logical_opacity_event("tx_begin", event_index++, tx_id, logical_id, commit_attempt));
+        events.push_back(logical_opacity_event(
+            "tx_read",
+            event_index++,
+            tx_id,
+            logical_id,
+            commit_attempt,
+            "retry_x",
+            lincheck::Value(committed_value)
+        ));
+        events.push_back(logical_opacity_event(
+            "tx_write",
+            event_index++,
+            tx_id,
+            logical_id,
+            commit_attempt,
+            "retry_x",
+            lincheck::Value(next_value)
+        ));
+        events.push_back(logical_opacity_event("tx_commit_success", event_index++, tx_id, logical_id, commit_attempt));
+        ++tx_id;
+        committed_value = next_value;
+    }
+    return events;
+}
+
+std::vector<lincheck::StmEventRecord> generated_wide_search_limit_history(std::size_t independent_writers) {
+    std::vector<lincheck::StmEventRecord> events;
+    for (std::size_t location = 0; location < independent_writers; ++location) {
+        events.push_back(opacity_event(
+            "tx_location_init",
+            1 + location,
+            0,
+            "limit_" + std::to_string(location),
+            lincheck::Value(0)
+        ));
+    }
+
+    std::uint64_t tx_id = 1;
+    for (std::size_t location = 0; location < independent_writers; ++location, ++tx_id) {
+        events.push_back(opacity_event("tx_begin", 10 + location, tx_id));
+        events.push_back(opacity_event(
+            "tx_write",
+            100 + location,
+            tx_id,
+            "limit_" + std::to_string(location),
+            lincheck::Value(1)
+        ));
+    }
+
+    const auto reader = tx_id++;
+    events.push_back(opacity_event("tx_begin", 50, reader));
+    for (std::size_t location = 1; location < independent_writers; ++location) {
+        events.push_back(opacity_event(
+            "tx_read",
+            200 + location,
+            reader,
+            "limit_" + std::to_string(location),
+            lincheck::Value(1)
+        ));
+    }
+    events.push_back(opacity_event(
+        "tx_read",
+        250,
+        reader,
+        "limit_0",
+        lincheck::Value(0)
+    ));
+    events.push_back(opacity_event("tx_abort", 300, reader));
+
+    for (std::uint64_t committed = 1; committed < reader; ++committed) {
+        events.push_back(opacity_event("tx_commit_success", 700 + static_cast<std::size_t>(committed), committed));
+    }
+    return events;
+}
+
+void opacity_verifier_generated_search_limit_and_mixed_histories() {
+    const auto limit_history = lincheck::build_stm_opacity_history(generated_search_limit_history());
+    require(limit_history.success(), "generated search-limit history should be well formed");
+    const auto bounded = lincheck::verify_stm_opacity(
+        limit_history.history,
+        lincheck::StmOpacityVerificationOptions{.max_committed_orders = 1}
+    );
+    require(
+        bounded.status == lincheck::StmOpacityStatus::search_limit_exceeded,
+        "generated bounded opacity search should report the configured search limit"
+    );
+    const auto unbounded = lincheck::verify_stm_opacity(limit_history.history);
+    require(unbounded.success(), "generated unbounded search-limit history should have an opaque order");
+
+    const auto possible_history = lincheck::build_stm_opacity_history(generated_mixed_snapshot_history(false));
+    require(possible_history.success(), "generated possible mixed history should be well formed");
+    require(
+        lincheck::verify_stm_opacity(possible_history.history).success(),
+        "generated possible mixed history should satisfy opacity"
+    );
+
+    const auto impossible_history = lincheck::build_stm_opacity_history(generated_mixed_snapshot_history(true));
+    require(impossible_history.success(), "generated impossible mixed history should be well formed");
+    const auto impossible = lincheck::verify_stm_opacity(impossible_history.history);
+    require(!impossible.success(), "generated impossible mixed history should violate opacity");
+    require(
+        impossible.ordering_graph_cycle,
+        "generated impossible mixed history should fail through read-from ordering constraints"
+    );
+}
+
+void opacity_verifier_generated_multi_reader_ambiguity_matrix() {
+    constexpr std::uint64_t base_seed = 0xadb15720260706ULL;
+    for (std::size_t locations = 2; locations <= 4; ++locations) {
+        for (std::size_t readers = 2; readers <= 3; ++readers) {
+            const auto history = lincheck::build_stm_opacity_history(
+                generated_seeded_multi_reader_ambiguous_history(base_seed + locations * 17 + readers, locations, readers)
+            );
+            require(history.success(), "multi-reader ambiguous history should be well formed");
+            const auto verification = lincheck::verify_stm_opacity(history.history);
+            require(verification.success(), "multi-reader ambiguous history should remain opaque");
+            require(
+                verification.ambiguous_read_from_constraints >= locations * readers,
+                "multi-reader ambiguity should retain a disjunctive choice for each generated read"
+            );
+            require(
+                verification.ambiguous_read_from_candidate_prunes > 0 ||
+                    verification.ambiguous_read_from_conflicting_writer_prunes > 0,
+                "multi-reader ambiguity should exercise prefix pruning"
+            );
+        }
+    }
+}
+
+void opacity_verifier_generated_larger_retry_observer_matrix() {
+    for (std::uint64_t logical_count : {4ULL, 7ULL}) {
+        for (int aborted_attempts : {2, 4}) {
+            const auto history = lincheck::build_stm_opacity_history(
+                generated_larger_retry_history(logical_count, aborted_attempts)
+            );
+            require(history.success(), "larger retry logical history should be well formed");
+            const auto verification = lincheck::verify_stm_opacity(history.history);
+            require(verification.success(), "larger retry logical history should satisfy opacity");
+            require(
+                verification.observer_transaction_count == logical_count * static_cast<std::uint64_t>(aborted_attempts),
+                "larger retry history should retain every aborted attempt as an observer"
+            );
+            require(
+                verification.committed_transaction_count == logical_count,
+                "larger retry history should retain one committed attempt per logical transaction"
+            );
+        }
+    }
+}
+
+void opacity_verifier_generated_paired_possible_impossible_cycle_histories() {
+    for (std::size_t locations = 3; locations <= 5; ++locations) {
+        const auto possible_history = lincheck::build_stm_opacity_history(
+            generated_cycle_snapshot_history(locations, false)
+        );
+        require(possible_history.success(), "generated possible cycle-shape history should be well formed");
+        require(
+            lincheck::verify_stm_opacity(possible_history.history).success(),
+            "generated possible cycle-shape history should satisfy opacity"
+        );
+
+        const auto impossible_history = lincheck::build_stm_opacity_history(
+            generated_cycle_snapshot_history(locations, true)
+        );
+        require(impossible_history.success(), "generated impossible cycle-shape history should be well formed");
+        const auto impossible = lincheck::verify_stm_opacity(impossible_history.history);
+        require(!impossible.success(), "generated impossible cycle-shape history should violate opacity");
+        require(
+            impossible.ordering_graph_cycle,
+            "generated impossible cycle-shape history should fail through ordering-cycle pruning"
+        );
+    }
+}
+
+void opacity_verifier_generated_wide_search_limit_matrix() {
+    for (std::size_t independent_writers = 3; independent_writers <= 5; ++independent_writers) {
+        const auto history = lincheck::build_stm_opacity_history(
+            generated_wide_search_limit_history(independent_writers)
+        );
+        require(history.success(), "wide generated search-limit history should be well formed");
+        const auto bounded = lincheck::verify_stm_opacity(
+            history.history,
+            lincheck::StmOpacityVerificationOptions{.max_committed_orders = 1}
+        );
+        require(
+            bounded.status == lincheck::StmOpacityStatus::search_limit_exceeded,
+            "wide generated history should report bounded search-limit exhaustion"
+        );
+        const auto unbounded = lincheck::verify_stm_opacity(history.history);
+        require(unbounded.success(), "wide generated history should have an opaque committed order");
+        require(
+            unbounded.committed_order_search_space_upper_bound > independent_writers,
+            "wide generated history should retain a non-trivial committed-order search space"
+        );
+    }
+}
+
+void opacity_verifier_rejects_multi_location_impossible_history_with_context() {
+    std::vector<lincheck::StmEventRecord> events;
+    events.push_back(opacity_event("tx_location_init", 1, 0, "x", lincheck::Value(0)));
+    events.push_back(opacity_event("tx_location_init", 2, 0, "y", lincheck::Value(0)));
+    events.push_back(opacity_event("tx_begin", 10, 1));
+    events.push_back(opacity_event("tx_write", 20, 1, "x", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_commit_success", 100, 1));
+    events.push_back(opacity_event("tx_begin", 11, 2));
+    events.push_back(opacity_event("tx_write", 21, 2, "y", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_commit_success", 101, 2));
+    events.push_back(opacity_event("tx_begin", 12, 3));
+    events.push_back(opacity_event("tx_read", 30, 3, "x", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_read", 31, 3, "y", lincheck::Value(0)));
+    events.push_back(opacity_event("tx_commit_success", 102, 3));
+    events.push_back(opacity_event("tx_begin", 13, 4));
+    events.push_back(opacity_event("tx_read", 32, 4, "x", lincheck::Value(0)));
+    events.push_back(opacity_event("tx_read", 33, 4, "y", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_commit_success", 103, 4));
+
+    const auto history = lincheck::build_stm_opacity_history(events);
+    require(history.success(), "multi-location impossible history should be well formed");
+    const auto verification = lincheck::verify_stm_opacity(history.history);
+    require(!verification.success(), "multi-location read-from cycle should violate opacity");
+    require(verification.ordering_graph_cycle, "multi-location impossible history should be rejected by ordering graph");
+    require(
+        verification.explanation.find("cycle contributors") != std::string::npos,
+        "multi-location diagnostic should include cycle contributors"
+    );
+    require(
+        verification.explanation.find("read-from witnesses") != std::string::npos,
+        "multi-location diagnostic should include read-from witnesses"
+    );
+    require(
+        verification.explanation.find("x") != std::string::npos &&
+            verification.explanation.find("y") != std::string::npos,
+        "multi-location diagnostic should identify both involved locations"
+    );
+}
+
+void opacity_verifier_rejects_larger_observer_dirty_chain_with_prefix_samples() {
+    std::vector<lincheck::StmEventRecord> events;
+    events.push_back(opacity_event("tx_location_init", 1, 0, "x", lincheck::Value(0)));
+    events.push_back(opacity_event("tx_location_init", 2, 0, "y", lincheck::Value(0)));
+    events.push_back(opacity_event("tx_location_init", 3, 0, "z", lincheck::Value(0)));
+    events.push_back(opacity_event("tx_begin", 10, 1));
+    events.push_back(opacity_event("tx_write", 11, 1, "x", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_commit_success", 20, 1));
+    events.push_back(opacity_event("tx_begin", 30, 2));
+    events.push_back(opacity_event("tx_read", 31, 2, "x", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_write", 32, 2, "y", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_abort", 40, 2));
+    events.push_back(opacity_event("tx_begin", 50, 3));
+    events.push_back(opacity_event("tx_read", 51, 3, "y", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_write", 52, 3, "z", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_abort", 60, 3));
+    events.push_back(opacity_event("tx_begin", 70, 4));
+    events.push_back(opacity_event("tx_read", 71, 4, "z", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_abort", 80, 4));
+
+    const auto history = lincheck::build_stm_opacity_history(events);
+    require(history.success(), "larger observer-chain history should be well formed");
+    const auto verification = lincheck::verify_stm_opacity(history.history);
+    require(!verification.success(), "observer writes should not feed a larger observer chain");
+    require(
+        verification.observer_transaction_count >= 3,
+        "larger observer-chain history should contain multiple observers"
+    );
+    require(
+        !verification.rejected_prefix_samples.empty(),
+        "observer-chain diagnostic should retain rejected prefix samples"
+    );
+    require(
+        verification.explanation.find("rejected prefix samples") != std::string::npos,
+        "observer-chain failure should append rejected prefix samples"
+    );
+}
+
+void opacity_verifier_rejects_live_observer_writes_used_by_later_observer() {
+    std::vector<lincheck::StmEventRecord> events;
+    events.push_back(opacity_event("tx_location_init", 1, 0, "x", lincheck::Value(0)));
+    events.push_back(opacity_event("tx_location_init", 2, 0, "y", lincheck::Value(0)));
+    events.push_back(opacity_event("tx_begin", 10, 1));
+    events.push_back(opacity_event("tx_write", 11, 1, "x", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_commit_success", 20, 1));
+    events.push_back(opacity_event("tx_begin", 30, 2));
+    events.push_back(opacity_event("tx_read", 31, 2, "x", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_write", 32, 2, "y", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_begin", 40, 3));
+    events.push_back(opacity_event("tx_read", 41, 3, "y", lincheck::Value(1)));
+    events.push_back(opacity_event("tx_abort", 50, 3));
+
+    const auto history = lincheck::build_stm_opacity_history(events);
+    require(history.success(), "live-observer chain history should be well formed");
+    const auto verification = lincheck::verify_stm_opacity(history.history);
+    require(!verification.success(), "live observer writes should not be visible to later observers");
+    require(
+        verification.explanation.find("observed 1") != std::string::npos,
+        "live-observer chain diagnostic should include the dirty observed value"
+    );
+}
+
+struct ScriptedOpacityObject {
+    int value = 0;
+
+    void init_location() {
+        lincheck::stm::tx_location_register(&value, "value", "int");
+        lincheck::stm::tx_location_init(&value, 0);
+    }
+
+    int aborted_write() {
+        init_location();
+        lincheck::stm::tx_begin(false);
+        lincheck::stm::tx_write_value(&value, 1);
+        lincheck::stm::tx_abort("scripted");
+        return 0;
+    }
+
+    int dirty_read() {
+        init_location();
+        lincheck::stm::tx_begin(true);
+        lincheck::stm::tx_read_value(&value, 1);
+        lincheck::stm::tx_commit_success();
+        return 0;
+    }
+
+    int clean_read() {
+        init_location();
+        lincheck::stm::tx_begin(true);
+        lincheck::stm::tx_read_value(&value, 0);
+        lincheck::stm::tx_commit_success();
+        return 0;
+    }
+};
+
+struct ScriptedOpacityModel {
+    int aborted_write() { return 0; }
+    int dirty_read() { return 0; }
+    int clean_read() { return 0; }
+};
+
+struct WrongScriptedOpacityModel {
+    int aborted_write() { return 0; }
+    int dirty_read() { return 1; }
+    int clean_read() { return 0; }
+};
+
+lincheck::ExecutionScenario scripted_opacity_scenario(int read_operation_index) {
+    lincheck::ExecutionScenario scenario;
+    scenario.parallel = {
+        {lincheck::Actor{
+            .operation_index = 0,
+            .name = "aborted_write",
+            .group = "",
+            .non_parallel = false,
+            .one_shot = false,
+            .arguments = {}
+        }},
+        {lincheck::Actor{
+            .operation_index = static_cast<std::size_t>(read_operation_index),
+            .name = read_operation_index == 1 ? "dirty_read" : "clean_read",
+            .group = "",
+            .non_parallel = false,
+            .one_shot = false,
+            .arguments = {}
+        }}
+    };
+    return scenario;
+}
+
+void model_checker_opacity_can_fail_independently_of_linearizability() {
+    lincheck::TestSpec spec = lincheck::test<ScriptedOpacityObject, ScriptedOpacityModel>()
+        .operation("aborted_write", &ScriptedOpacityObject::aborted_write, &ScriptedOpacityModel::aborted_write)
+        .operation("dirty_read", &ScriptedOpacityObject::dirty_read, &ScriptedOpacityModel::dirty_read);
+    const auto scenario = scripted_opacity_scenario(1);
+
+    const auto linearizable_only = lincheck::ModelCheckingOptions()
+        .max_schedule_length(12)
+        .minimize_failed_scenario(false)
+        .check(spec, scenario);
+    require(linearizable_only.success, "scripted dirty STM object should be publicly linearizable without opacity");
+
+    const auto opacity = lincheck::ModelCheckingOptions()
+        .max_schedule_length(12)
+        .minimize_failed_scenario(false)
+        .check_opacity()
+        .check(spec, scenario);
+    require(!opacity.success, "model checker should fail the scripted dirty STM object with opacity enabled");
+    require(
+        opacity.failure == lincheck::FailureKind::opacity_violation,
+        "scripted dirty STM failure should use the opacity failure kind"
+    );
+    require(opacity.opacity_checked, "opacity failure should retain opacity result fields");
+    require(
+        opacity.trace.find("stm opacity:") != std::string::npos,
+        "opacity failure trace should include the STM opacity section"
+    );
+}
+
+void model_checker_reports_combined_linearizability_and_opacity_failures() {
+    lincheck::TestSpec spec = lincheck::test<ScriptedOpacityObject, WrongScriptedOpacityModel>()
+        .operation("aborted_write", &ScriptedOpacityObject::aborted_write, &WrongScriptedOpacityModel::aborted_write)
+        .operation("dirty_read", &ScriptedOpacityObject::dirty_read, &WrongScriptedOpacityModel::dirty_read);
+    const auto scenario = scripted_opacity_scenario(1);
+
+    const auto result = lincheck::ModelCheckingOptions()
+        .max_schedule_length(12)
+        .minimize_failed_scenario(false)
+        .check_opacity()
+        .check(spec, scenario);
+
+    require(!result.success, "scripted object should fail both public verification and opacity");
+    require(
+        result.failure == lincheck::FailureKind::opacity_violation,
+        "combined failure should retain opacity failure kind as the primary taxonomy"
+    );
+    require(
+        result.message.find("invalid execution results and STM opacity violation") != std::string::npos,
+        "combined failure message should mention both public and opacity failures"
+    );
+    require(result.opacity_checked, "combined failure should retain opacity fields");
+    require(!result.opacity_result.success(), "combined failure should retain failing opacity result");
+    require(!result.verifier_explanation.empty(), "combined failure should retain public verifier explanation");
+    require(
+        result.trace.find("stm opacity:") != std::string::npos &&
+            result.trace.find("verifier explanation:") != std::string::npos,
+        "combined failure trace should include both opacity and public verifier sections"
+    );
+}
+
+void model_checker_opacity_accepts_clean_scripted_stm() {
+    lincheck::TestSpec spec = lincheck::test<ScriptedOpacityObject, ScriptedOpacityModel>()
+        .operation("aborted_write", &ScriptedOpacityObject::aborted_write, &ScriptedOpacityModel::aborted_write)
+        .operation("dirty_read", &ScriptedOpacityObject::dirty_read, &ScriptedOpacityModel::dirty_read)
+        .operation("clean_read", &ScriptedOpacityObject::clean_read, &ScriptedOpacityModel::clean_read);
+    const auto scenario = scripted_opacity_scenario(2);
+
+    const auto result = lincheck::ModelCheckingOptions()
+        .max_schedule_length(12)
+        .minimize_failed_scenario(false)
+        .check_opacity()
+        .check(spec, scenario);
+    require(result.success, "model checker should accept the clean scripted STM object with opacity enabled");
+}
+
+void stress_runner_opacity_lifetime_policy_controls_raw_lifetime_handling() {
+    struct RawLifetimeObject {
+        int value = 0;
+
+        int read_then_destroy_live() {
+            lincheck::stm::tx_location_init(&value, 0);
+            lincheck::stm::tx_begin(true);
+            lincheck::stm::tx_read_value(&value, 0);
+            lincheck::stm::tx_location_destroy(&value);
+            lincheck::stm::tx_abort("scripted live destroy");
+            return 0;
+        }
+    };
+    struct RawLifetimeModel {
+        int read_then_destroy_live() { return 0; }
+    };
+
+    lincheck::TestSpec spec = lincheck::test<RawLifetimeObject, RawLifetimeModel>()
+        .operation(
+            "read_then_destroy_live",
+            &RawLifetimeObject::read_then_destroy_live,
+            &RawLifetimeModel::read_then_destroy_live
+        );
+    lincheck::ExecutionScenario scenario;
+    scenario.parallel = {
+        {lincheck::Actor{
+            .operation_index = 0,
+            .name = "read_then_destroy_live",
+            .group = "",
+            .non_parallel = false,
+            .one_shot = false,
+            .arguments = {}
+        }}
+    };
+
+    const auto default_result = lincheck::StressOptions()
+        .iterations(1)
+        .invocations_per_iteration(1)
+        .check_opacity()
+        .check(spec, scenario);
+    require(default_result.success, "default opacity policy should ignore raw live-destroy lifetime anomalies");
+    require(default_result.opacity_checked, "default opacity policy should still run the opacity checker");
+    require(
+        default_result.opacity_result.ignored_lifetime_anomalies > 0,
+        "default opacity result should report ignored raw lifetime anomalies"
+    );
+
+    const auto strict_result = lincheck::StressOptions()
+        .iterations(1)
+        .invocations_per_iteration(1)
+        .check_opacity()
+        .opacity_lifetime_policy(lincheck::StmLifetimePolicy::strict_lifetimes)
+        .check(spec, scenario);
+    require(!strict_result.success, "strict opacity policy should reject raw live-destroy lifetime anomalies");
+    require(
+        strict_result.opacity_result.status == lincheck::StmOpacityStatus::malformed_history,
+        "strict raw live-destroy failure should be a malformed opacity history"
+    );
+    require(
+        strict_result.opacity_explanation.find("transactions were live") != std::string::npos,
+        "strict raw live-destroy diagnostic should mention live transactions"
+    );
+}
+
+void stress_runner_opacity_reports_malformed_histories() {
+    struct MissingValueObject {
+        int value = 0;
+
+        int read() {
+            lincheck::stm::tx_location_init(&value, 0);
+            lincheck::stm::tx_begin(true);
+            lincheck::stm::tx_read(&value);
+            lincheck::stm::tx_commit_success();
+            return 0;
+        }
+    };
+    struct MissingValueModel {
+        int read() { return 0; }
+    };
+
+    lincheck::TestSpec spec = lincheck::test<MissingValueObject, MissingValueModel>()
+        .operation("read", &MissingValueObject::read, &MissingValueModel::read);
+    lincheck::ExecutionScenario scenario;
+    scenario.parallel = {
+        {lincheck::Actor{.operation_index = 0, .name = "read", .group = "", .non_parallel = false, .one_shot = false, .arguments = {}}}
+    };
+
+    const auto result = lincheck::StressOptions()
+        .iterations(1)
+        .invocations_per_iteration(1)
+        .check_opacity()
+        .check(spec, scenario);
+    require(!result.success, "stress runner should reject malformed opacity histories");
+    require(
+        result.failure == lincheck::FailureKind::opacity_violation,
+        "malformed opacity history should use the opacity failure kind"
+    );
+    require(
+        result.opacity_result.status == lincheck::StmOpacityStatus::malformed_history,
+        "malformed opacity history status should be retained"
+    );
 }
 
 } // namespace
@@ -6254,6 +8594,147 @@ int main() {
         {"source_rewrite_instruments_standard_wrappers_and_filters_noise", source_rewrite_instruments_standard_wrappers_and_filters_noise},
         {"stm_hooks_emit_trace_events_and_switch_points", stm_hooks_emit_trace_events_and_switch_points},
         {"multiverse_hook_macros_bind_to_stm_hooks", multiverse_hook_macros_bind_to_stm_hooks},
+        {"opacity_history_builder_accepts_well_formed_value_history", opacity_history_builder_accepts_well_formed_value_history},
+        {"opacity_history_exports_json_and_dot", opacity_history_exports_json_and_dot},
+        {"opacity_history_builder_rejects_missing_initial_values_and_values", opacity_history_builder_rejects_missing_initial_values_and_values},
+        {"opacity_history_builder_rejects_unsupported_value_types", opacity_history_builder_rejects_unsupported_value_types},
+        {"opacity_verifier_rejects_dirty_aborted_reads", opacity_verifier_rejects_dirty_aborted_reads},
+        {"opacity_verifier_accepts_aborted_and_live_consistent_transactions", opacity_verifier_accepts_aborted_and_live_consistent_transactions},
+        {"opacity_verifier_accepts_read_own_write", opacity_verifier_accepts_read_own_write},
+        {"opacity_verifier_rejects_stale_reads_after_real_time_predecessor", opacity_verifier_rejects_stale_reads_after_real_time_predecessor},
+        {"opacity_verifier_rejects_inconsistent_two_location_snapshot", opacity_verifier_rejects_inconsistent_two_location_snapshot},
+        {"opacity_verifier_rejects_incompatible_observer_real_time_prefixes", opacity_verifier_rejects_incompatible_observer_real_time_prefixes},
+        {"opacity_history_builder_rejects_duplicate_transaction_end", opacity_history_builder_rejects_duplicate_transaction_end},
+        {"opacity_history_builder_models_safe_location_lifetime_reuse", opacity_history_builder_models_safe_location_lifetime_reuse},
+        {"opacity_history_builder_rejects_unsafe_location_lifetime_reuse", opacity_history_builder_rejects_unsafe_location_lifetime_reuse},
+        {
+            "opacity_history_builder_default_policy_ignores_raw_destroyed_access",
+            opacity_history_builder_default_policy_ignores_raw_destroyed_access
+        },
+        {
+            "opacity_history_builder_default_policy_keeps_checking_values_after_raw_reuse",
+            opacity_history_builder_default_policy_keeps_checking_values_after_raw_reuse
+        },
+        {
+            "opacity_history_builder_accepts_embedded_tx_fields_with_object_lifetime_handles",
+            opacity_history_builder_accepts_embedded_tx_fields_with_object_lifetime_handles
+        },
+        {
+            "opacity_history_builder_accepts_standalone_tx_field_as_self_owned_location",
+            opacity_history_builder_accepts_standalone_tx_field_as_self_owned_location
+        },
+        {
+            "opacity_history_builder_accepts_non_quiescent_reuse_with_distinct_handles",
+            opacity_history_builder_accepts_non_quiescent_reuse_with_distinct_handles
+        },
+        {
+            "opacity_history_builder_rejects_raw_reuse_after_explicit_handle_while_live",
+            opacity_history_builder_rejects_raw_reuse_after_explicit_handle_while_live
+        },
+        {
+            "opacity_history_builder_accepts_mixed_raw_and_handle_locations",
+            opacity_history_builder_accepts_mixed_raw_and_handle_locations
+        },
+        {
+            "opacity_backend_location_registry_supports_non_intrusive_reuse_handles",
+            opacity_backend_location_registry_supports_non_intrusive_reuse_handles
+        },
+        {"opacity_verifier_reports_committed_order_search_limit", opacity_verifier_reports_committed_order_search_limit},
+        {"opacity_verifier_memoizes_failed_committed_prefixes", opacity_verifier_memoizes_failed_committed_prefixes},
+        {
+            "opacity_verifier_uses_read_from_constraints_to_prune_committed_orders",
+            opacity_verifier_uses_read_from_constraints_to_prune_committed_orders
+        },
+        {
+            "opacity_verifier_rejects_read_from_ordering_cycles_before_search",
+            opacity_verifier_rejects_read_from_ordering_cycles_before_search
+        },
+        {
+            "opacity_verifier_accepts_repeated_logical_transaction_attempts",
+            opacity_verifier_accepts_repeated_logical_transaction_attempts
+        },
+        {
+            "opacity_verifier_reports_ambiguous_read_from_candidates",
+            opacity_verifier_reports_ambiguous_read_from_candidates
+        },
+        {
+            "opacity_verifier_prunes_ambiguous_read_from_overwritten_prefixes",
+            opacity_verifier_prunes_ambiguous_read_from_overwritten_prefixes
+        },
+        {
+            "opacity_verifier_eliminates_impossible_ambiguous_sources",
+            opacity_verifier_eliminates_impossible_ambiguous_sources
+        },
+        {
+            "opacity_verifier_eliminates_shadowed_ambiguous_sources",
+            opacity_verifier_eliminates_shadowed_ambiguous_sources
+        },
+        {
+            "opacity_verifier_eliminates_initial_source_shadowed_by_conflict",
+            opacity_verifier_eliminates_initial_source_shadowed_by_conflict
+        },
+        {
+            "opacity_verifier_rejects_ambiguous_read_when_all_sources_eliminated",
+            opacity_verifier_rejects_ambiguous_read_when_all_sources_eliminated
+        },
+        {
+            "opacity_verifier_generated_larger_ambiguous_read_from_spaces",
+            opacity_verifier_generated_larger_ambiguous_read_from_spaces
+        },
+        {
+            "opacity_verifier_generated_seeded_ambiguous_read_from_matrix",
+            opacity_verifier_generated_seeded_ambiguous_read_from_matrix
+        },
+        {
+            "opacity_verifier_generated_shadowed_source_matrix",
+            opacity_verifier_generated_shadowed_source_matrix
+        },
+        {
+            "opacity_verifier_leaves_initial_matching_ambiguous_reads_to_serial_search",
+            opacity_verifier_leaves_initial_matching_ambiguous_reads_to_serial_search
+        },
+        {
+            "opacity_verifier_generated_retry_heavy_logical_histories",
+            opacity_verifier_generated_retry_heavy_logical_histories
+        },
+        {
+            "opacity_verifier_generated_long_observer_chains",
+            opacity_verifier_generated_long_observer_chains
+        },
+        {
+            "opacity_verifier_generated_search_limit_and_mixed_histories",
+            opacity_verifier_generated_search_limit_and_mixed_histories
+        },
+        {
+            "opacity_verifier_generated_multi_reader_ambiguity_matrix",
+            opacity_verifier_generated_multi_reader_ambiguity_matrix
+        },
+        {
+            "opacity_verifier_generated_larger_retry_observer_matrix",
+            opacity_verifier_generated_larger_retry_observer_matrix
+        },
+        {
+            "opacity_verifier_generated_paired_possible_impossible_cycle_histories",
+            opacity_verifier_generated_paired_possible_impossible_cycle_histories
+        },
+        {
+            "opacity_verifier_generated_wide_search_limit_matrix",
+            opacity_verifier_generated_wide_search_limit_matrix
+        },
+        {
+            "opacity_verifier_rejects_multi_location_impossible_history_with_context",
+            opacity_verifier_rejects_multi_location_impossible_history_with_context
+        },
+        {
+            "opacity_verifier_rejects_larger_observer_dirty_chain_with_prefix_samples",
+            opacity_verifier_rejects_larger_observer_dirty_chain_with_prefix_samples
+        },
+        {"opacity_verifier_rejects_live_observer_writes_used_by_later_observer", opacity_verifier_rejects_live_observer_writes_used_by_later_observer},
+        {"model_checker_opacity_can_fail_independently_of_linearizability", model_checker_opacity_can_fail_independently_of_linearizability},
+        {"model_checker_reports_combined_linearizability_and_opacity_failures", model_checker_reports_combined_linearizability_and_opacity_failures},
+        {"model_checker_opacity_accepts_clean_scripted_stm", model_checker_opacity_accepts_clean_scripted_stm},
+        {"stress_runner_opacity_lifetime_policy_controls_raw_lifetime_handling", stress_runner_opacity_lifetime_policy_controls_raw_lifetime_handling},
+        {"stress_runner_opacity_reports_malformed_histories", stress_runner_opacity_reports_malformed_histories},
     };
 
     int failed = 0;

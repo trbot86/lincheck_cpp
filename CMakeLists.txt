@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.20)
 project(cpp_lincheck_mvp LANGUAGES CXX)
 
 option(LINCHECK_BUILD_MULTIVERSE_TESTS "Build Multiverse-backed smoke tests when the editable checkout is available" ON)
-option(LINCHECK_BUILD_CLANG_TOOLS "Build optional Clang/LLVM tooling prototypes when LibTooling is available" ON)
+option(LINCHECK_BUILD_CLANG_TOOLS "Build optional Clang/LLVM tooling prototypes when LibTooling is available" OFF)
 set(LINCHECK_MULTIVERSE_ROOT
     "${CMAKE_CURRENT_SOURCE_DIR}/upstream/mvcc_tm"
     CACHE PATH "Path to an mvcc_tm checkout patched with Lincheck hook call sites"
@@ -117,6 +117,8 @@ target_compile_options(lincheck_source_rewrite PRIVATE
 
 set(LINCHECK_HAS_CLANG_TOOLS OFF)
 if (LINCHECK_BUILD_CLANG_TOOLS)
+    enable_language(C)
+
     find_program(LINCHECK_LLVM_CONFIG_EXE llvm-config)
     if (LINCHECK_LLVM_CONFIG_EXE)
         execute_process(

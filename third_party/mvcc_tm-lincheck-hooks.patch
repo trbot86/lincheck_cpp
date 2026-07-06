@@ -1,13 +1,22 @@
 diff --git a/multiverse/multiverse.hpp b/multiverse/multiverse.hpp
-index 62dba0e..4e758a4 100644
+index 62dba0e..b59d0b1 100644
 --- a/multiverse/multiverse.hpp
 +++ b/multiverse/multiverse.hpp
-@@ -40,6 +40,58 @@
- #include "tm_common/tm_timelines.h"
- #include "bloom_filter.h"
-
+@@ -42,0 +43,96 @@
 +#ifndef MULTIVERSE_LINCHECK_TX_BEGIN
 +#define MULTIVERSE_LINCHECK_TX_BEGIN(read_only, start_clock_or_version) do { (void)(read_only); (void)(start_clock_or_version); } while (false)
++#endif
++
++#ifndef MULTIVERSE_LINCHECK_TX_LOCATION_INIT
++#define MULTIVERSE_LINCHECK_TX_LOCATION_INIT(address, value) do { (void)(address); (void)(value); } while (false)
++#endif
++
++#ifndef MULTIVERSE_LINCHECK_TX_LOCATION_REGISTER
++#define MULTIVERSE_LINCHECK_TX_LOCATION_REGISTER(address, label, type_name) do { (void)(address); (void)(label); (void)(type_name); } while (false)
++#endif
++
++#ifndef MULTIVERSE_LINCHECK_TX_LOCATION_DESTROY
++#define MULTIVERSE_LINCHECK_TX_LOCATION_DESTROY(address) do { (void)(address); } while (false)
 +#endif
 +
 +#ifndef MULTIVERSE_LINCHECK_TX_READ
@@ -16,6 +25,34 @@ index 62dba0e..4e758a4 100644
 +
 +#ifndef MULTIVERSE_LINCHECK_TX_WRITE
 +#define MULTIVERSE_LINCHECK_TX_WRITE(address, lock_slot) do { (void)(address); (void)(lock_slot); } while (false)
++#endif
++
++#ifndef MULTIVERSE_LINCHECK_TX_READ_VALUE
++#define MULTIVERSE_LINCHECK_TX_READ_VALUE(address, value, lock_slot, version) do { (void)(address); (void)(value); (void)(lock_slot); (void)(version); } while (false)
++#endif
++
++#ifndef MULTIVERSE_LINCHECK_TX_WRITE_VALUE
++#define MULTIVERSE_LINCHECK_TX_WRITE_VALUE(address, value, lock_slot) do { (void)(address); (void)(value); (void)(lock_slot); } while (false)
++#endif
++
++#ifndef MULTIVERSE_LINCHECK_TX_FIELD_LOCATION_INIT
++#define MULTIVERSE_LINCHECK_TX_FIELD_LOCATION_INIT(field, address, value) MULTIVERSE_LINCHECK_TX_LOCATION_INIT((address), (value))
++#endif
++
++#ifndef MULTIVERSE_LINCHECK_TX_FIELD_LOCATION_REGISTER
++#define MULTIVERSE_LINCHECK_TX_FIELD_LOCATION_REGISTER(field, address, label, type_name) MULTIVERSE_LINCHECK_TX_LOCATION_REGISTER((address), (label), (type_name))
++#endif
++
++#ifndef MULTIVERSE_LINCHECK_TX_FIELD_LOCATION_DESTROY
++#define MULTIVERSE_LINCHECK_TX_FIELD_LOCATION_DESTROY(field, address) MULTIVERSE_LINCHECK_TX_LOCATION_DESTROY((address))
++#endif
++
++#ifndef MULTIVERSE_LINCHECK_TX_FIELD_READ_VALUE
++#define MULTIVERSE_LINCHECK_TX_FIELD_READ_VALUE(field, address, value, lock_slot, version) MULTIVERSE_LINCHECK_TX_READ_VALUE((address), (value), (lock_slot), (version))
++#endif
++
++#ifndef MULTIVERSE_LINCHECK_TX_FIELD_WRITE_VALUE
++#define MULTIVERSE_LINCHECK_TX_FIELD_WRITE_VALUE(field, address, value, lock_slot) MULTIVERSE_LINCHECK_TX_WRITE_VALUE((address), (value), (lock_slot))
 +#endif
 +
 +#ifndef MULTIVERSE_LINCHECK_TX_VALIDATE_BEGIN
@@ -58,134 +95,111 @@ index 62dba0e..4e758a4 100644
 +#define MULTIVERSE_LINCHECK_TX_RETRY(reason, attempt) do { (void)(reason); (void)(attempt); } while (false)
 +#endif
 +
- std::atomic<int> debugLock {0};
-
- // #define TRACK_OP_TYPE 1
-@@ -749,11 +801,13 @@ struct AppendLog_StandardWriteSet {
-     inline void unlock(uint64_t nextClock, uint64_t tid) {
-         for (uint64_t i = 0; i < size; i++) {
-             void* addr = entries[i].addr;
++#ifndef MULTIVERSE_LINCHECK_TX_ATTEMPT_METADATA
++#define MULTIVERSE_LINCHECK_TX_ATTEMPT_METADATA(logical_transaction_id, attempt) do { (void)(logical_transaction_id); (void)(attempt); } while (false)
++#endif
++
+@@ -51,0 +148,2 @@ namespace ns_multiverse {
++static std::atomic<uint64_t> lincheckNextLogicalTransactionId {1};
++
+@@ -411 +509 @@ struct alignas(64) AllocInfo {
+-            f();
++            if (f) f();
+@@ -418 +516 @@ struct alignas(64) AllocInfo {
+-            f();
++            if (f) f();
+@@ -752 +850,2 @@ struct AppendLog_StandardWriteSet {
 -            std::atomic<uint64_t>* mutex = &globals.gHashLock[hidx((size_t)addr)].mutex;
 +            const uint64_t tableIndex = hidx((size_t)addr);
 +            std::atomic<uint64_t>* mutex = &globals.gHashLock[tableIndex].mutex;
-             uint64_t sl = mutex->load(std::memory_order_acquire);
-             if (isLocked(sl) && getTid(sl) == tid) {
-                 uint64_t newSL = (tid << TID_SHIFT) | (nextClock);
-                 mutex->store(newSL, std::memory_order_release);
+@@ -756,0 +856 @@ struct AppendLog_StandardWriteSet {
 +                MULTIVERSE_LINCHECK_TX_LOCK_RELEASED(tableIndex);
-             }
-         }
-         if (next != nullptr) {
-@@ -1581,6 +1635,11 @@ public:
-                 myd->snapshotStartTs = myd->rClock;
-             }
-         }
+@@ -1583,0 +1684,5 @@ public:
 +        const bool readOnlyTxn =
 +            myd->tx_type == TX_IS_READ ||
 +            myd->tx_type == TX_IS_SNAPSHOT ||
 +            myd->tx_type == TX_IS_SNAPSHOT_MODE2;
 +        MULTIVERSE_LINCHECK_TX_BEGIN(readOnlyTxn, myd->rClock);
-
-         // Clear the logs of the previous transaction
-         myd->writeSet.reset();
-@@ -1596,19 +1655,25 @@ public:
-     inline bool endTx(OpData* myd, const int tid) {
-         std::atomic_signal_fence(std::memory_order_seq_cst);
-         if (myd->writeSet.size == 0) {
+@@ -1598,0 +1704 @@ public:
 +            MULTIVERSE_LINCHECK_TX_COMMIT_ATTEMPT();
-             if (myd->tx_type & TX_IS_SNAPSHOT) {
-                 snapshotRead_onCommit(myd, tid);
-             }
-             gMemManager.unanounceEpoch(myd->tid);
-             gMemManager.commit();
-             myd->attempt = 0;
+@@ -1604,0 +1711 @@ public:
 +            MULTIVERSE_LINCHECK_TX_COMMIT_SUCCESS(myd->rClock);
-             return true;
-         }
-
+@@ -1608 +1715,4 @@ public:
 -        if (!myd->readSet.validate(myd->rClock, tid)) {
 +        MULTIVERSE_LINCHECK_TX_VALIDATE_BEGIN();
 +        const bool readSetValid = myd->readSet.validate(myd->rClock, tid);
 +        MULTIVERSE_LINCHECK_TX_VALIDATE_END(readSetValid);
 +        if (!readSetValid) {
-             abortTx(myd);
-         }
-
+@@ -1611,0 +1722 @@ public:
 +        MULTIVERSE_LINCHECK_TX_COMMIT_ATTEMPT();
-         #ifndef USE_RDTSC
-         uint64_t commitTS = globals.gClock.load();
-         #else
-@@ -1630,6 +1695,7 @@ public:
-         gMemManager.commit();
-
-         myd->attempt = 0;
+@@ -1632,0 +1744 @@ public:
 +        MULTIVERSE_LINCHECK_TX_COMMIT_SUCCESS(commitTS);
-         return true;
-     }
-
-@@ -1659,7 +1725,9 @@ public:
-         myd->tx_type = txType;
-         myd->forceVersioning = false;
-
+@@ -1660,0 +1773,2 @@ public:
++        const uint64_t lincheckLogicalTransactionId =
++            lincheckNextLogicalTransactionId.fetch_add(1, std::memory_order_relaxed);
+@@ -1662 +1776,3 @@ public:
 -        setjmp(myd->env);
 +        if (setjmp(myd->env) != 0) {
 +            MULTIVERSE_LINCHECK_TX_RETRY("abort", static_cast<int>(myd->attempt + 1));
 +        }
-         myd->attempt++;
-         backoff(myd, myd->attempt);
-         beginTx(myd, tid);
-@@ -1814,7 +1882,7 @@ struct tx_field {
-     T operator->() { return load(); }
-
-     // Copy constructor
+@@ -1665,0 +1782,4 @@ public:
++        MULTIVERSE_LINCHECK_TX_ATTEMPT_METADATA(
++            lincheckLogicalTransactionId,
++            static_cast<int>(myd->attempt)
++        );
+@@ -1732,0 +1853 @@ struct tx_field {
++    mutable std::atomic<bool> lincheckLocationInitialized {false};
+@@ -1737,2 +1858,11 @@ struct tx_field {
+-    tx_field(T initVal) {
+-        store(initVal);
++    tx_field(T initVal) : data(initVal) {
++        lincheckRegisterLocation(initVal);
++    }
++
++    inline void lincheckRegisterLocation(T value) const {
++        bool expected = false;
++        if (lincheckLocationInitialized.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
++            void* addr = (void*)(&data);
++            MULTIVERSE_LINCHECK_TX_FIELD_LOCATION_REGISTER(this, addr, "tx_field", "tx_field");
++            MULTIVERSE_LINCHECK_TX_FIELD_LOCATION_INIT(this, addr, value);
++        }
+@@ -1741,0 +1872 @@ struct tx_field {
++        MULTIVERSE_LINCHECK_TX_FIELD_LOCATION_DESTROY(this, (void*)(&data));
+@@ -1817 +1948 @@ struct tx_field {
 -    tx_field<T>(const tx_field<T>& other) { store(other.load()); }
 +    tx_field(const tx_field<T>& other) { store(other.load()); }
-
-     // Assignment operator from a tx_field<T>
-     tx_field<T>& operator=(const tx_field<T>& other) {
-@@ -2262,6 +2330,7 @@ struct tx_field {
-         uint64_t tableIndex = hidx((size_t)addr);
-         LockTableNode* ltn = &globals.gHashLock[tableIndex];
-         std::atomic<uint64_t>* mutex = &ltn->mutex;
-+        MULTIVERSE_LINCHECK_TX_WRITE(addr, tableIndex);
-
-         #ifdef ENABLE_SNAPSHOT_ISOLATION
-         if (myd->tx_type == TX_IS_SNAPSHOT_ISOLATION) {
-@@ -2282,9 +2351,12 @@ struct tx_field {
-             break;
-         }
-
+@@ -2249,0 +2381 @@ struct tx_field {
++            lincheckRegisterLocation(newVal);
+@@ -2256,0 +2389 @@ struct tx_field {
++            lincheckRegisterLocation(newVal);
+@@ -2261,0 +2395 @@ struct tx_field {
++        lincheckRegisterLocation(data);
+@@ -2264,0 +2399 @@ struct tx_field {
++        MULTIVERSE_LINCHECK_TX_FIELD_WRITE_VALUE(this, addr, newVal, tableIndex);
+@@ -2284,0 +2420 @@ struct tx_field {
 +        MULTIVERSE_LINCHECK_TX_LOCK_ATTEMPT(tableIndex);
-         if (!tryWriteLock(myd->tid, mutex, sl)) {
+@@ -2285,0 +2422 @@ struct tx_field {
 +            MULTIVERSE_LINCHECK_TX_LOCK_FAILED(tableIndex);
-             abortTx(myd);
-         }
+@@ -2287,0 +2425 @@ struct tx_field {
 +        MULTIVERSE_LINCHECK_TX_LOCK_ACQUIRED(tableIndex);
-
-         if (myd->forceVersioning) {
-             forceVersionedStore(myd, addr, newVal, tableIndex, ltn, getTS(sl));
-@@ -2338,6 +2410,9 @@ struct tx_field {
-         #endif
-
-         myd->readCount++;
+@@ -2341 +2479,4 @@ struct tx_field {
+-
 +        void* addr = (void*)(&data);
++        lincheckRegisterLocation(data);
 +        uint64_t tableIndex = hidx((size_t)addr);
-+        MULTIVERSE_LINCHECK_TX_READ(addr, tableIndex, myd->rClock);
-
-         if (__glibc_unlikely(myd->tx_type & TX_IS_SNAPSHOT)) {
-             return snapshotLoad();
-@@ -2400,6 +2475,7 @@ void thread_registry_deregister_thread() {
-
- [[noreturn]] void abortTx(OpData* myd) {
-     std::atomic_signal_fence(std::memory_order_seq_cst);
++        T observed;
+@@ -2343 +2484 @@ struct tx_field {
+-            return snapshotLoad();
++            observed = snapshotLoad();
+@@ -2346 +2487 @@ struct tx_field {
+-            return load_tl2();
++            observed = load_tl2();
+@@ -2347,0 +2489,2 @@ struct tx_field {
++        MULTIVERSE_LINCHECK_TX_FIELD_READ_VALUE(this, addr, observed, tableIndex, myd->rClock);
++        return observed;
+@@ -2402,0 +2546 @@ void thread_registry_deregister_thread() {
 +    MULTIVERSE_LINCHECK_TX_ABORT("abortTx");
-
-     myd->writeSet.rollback(myd->tid);
-     myd->snapshotWriteSet.rollback(myd->tid);
-@@ -2458,4 +2534,4 @@ void thread_registry_deregister_thread() {
- }
- // #endif // MICROBENCH
-
+@@ -2461 +2605 @@ void thread_registry_deregister_thread() {
 -}
 \ No newline at end of file
 +}
