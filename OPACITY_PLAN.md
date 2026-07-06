@@ -1,344 +1,180 @@
-# Plan to Add STM Opacity Checking
+# STM Opacity Checking Status and Plan
 
-Date: 2026-07-05
+Date: 2026-07-06
 
 ## Goal
 
-Add an optional STM opacity checker to Lincheck++.
+Lincheck++ has an optional STM opacity checker alongside the public ADT linearizability checker. Public linearizability still checks operation return values, exceptions-as-results, post operations, validation callbacks, and real-time order. STM opacity checks the transaction-attempt history produced by explicit `lincheck::stm` value/location hooks.
 
-The current STM support uses transaction hooks as scheduler switch points and trace metadata, then verifies public ADT operation histories for linearizability. Opacity checking is different: it must verify the transaction history itself. A passing opacity check should mean that every observed transaction attempt, including aborted and live attempts, read from some consistent serial state within the explored schedule.
+The current checker is intended for small bounded model-checking and stress histories. A passing opacity check means no opacity violation was found in the retained, hooked, sequentially consistent execution history.
 
-This plan keeps ADT linearizability and STM opacity as separate checks:
+## Implemented
 
-- ADT linearizability checks public operation return values, exceptions-as-results, post operations, and real-time order.
-- STM opacity checks transaction-level reads, writes, commits, aborts, and live attempts.
+- Generic STM lifecycle hooks for begin, commit, abort, retry, validation, lock events, and attempt metadata.
+- Value/location hooks for opacity:
+  - `tx_location_init`
+  - `tx_location_register`
+  - `tx_location_destroy`
+  - `tx_read_value`
+  - `tx_write_value`
+  - `tx_attempt_metadata`
+- `StmOpacityHistory` construction from structured `CheckResult::stm_events`.
+- Explicit malformed-history failures for missing values, missing initial values, unsupported value payloads, duplicate transaction ends, unknown transaction accesses, and invalid retry references.
+- `StmLifetimePolicy::value_history_only` as the default opacity history-building policy. Raw addresses are treated as value-history logical locations; raw destroy/reuse/use-after-destroy anomalies are counted and sampled as ignored lifetime anomalies instead of failing history construction.
+- `StmLifetimePolicy::strict_lifetimes` as opt-in lifecycle/reclamation checking. Strict mode preserves malformed-history failures for destroyed-location access, raw destroy/reuse while transactions are live, ambiguous raw/handle reuse, and missing disambiguating handles.
+- Location lifetime generations for safe raw-address reuse after `tx_location_destroy(...)` at a quiescent boundary in strict mode.
+- Optional explicit location identity for non-quiescent reuse:
+  - `lincheck::stm::ObjectLifetimeHandle`
+  - `lincheck::stm::LocationHandle`
+  - `lincheck::stm::tx_object<T>` / `lincheck::tx_object<T>`
+  - `lincheck::stm::tx_field<T>` / `lincheck::tx_field<T>`
+  - backend-facing `make_backend_object_lifetime_handle(...)`, `make_backend_location_handle(...)`, and `BackendLocationRegistry`
+  - overloads of `tx_location_init`, `tx_location_register`, `tx_location_destroy`, `tx_read`, `tx_write`, `tx_read_value`, and `tx_write_value` that accept a `LocationHandle`.
+  Embedded fields can be identified by object lifetime plus field ID, standalone `tx_field<T>` instances use the field object itself as the allocation unit, and backend adapters can supply allocation tokens/generations without using intrusive test wrappers.
+- A transaction-level opacity verifier that:
+  - serializes committed transaction attempts subject to visible real-time order,
+  - validates read-own-write behavior,
+  - validates reads against the latest committed serial-state value or the registered initial value,
+  - treats aborted and live transactions as observers over serial prefixes,
+  - keeps aborted/live writes local to their own attempt,
+  - enforces visible real-time order between committed transactions and observers,
+  - enforces visible real-time prefix compatibility between observers.
+- Conservative read-from and ordering-graph pruning before committed-order backtracking:
+  - visible real-time edges and sound read-from edges are transitive-closed,
+  - ordering cycles are rejected before exploring committed orders,
+  - blocked committed candidates are skipped until required predecessors are placed,
+  - ambiguous non-initial reads with multiple possible committed writers are skipped until at least one possible source writer is placed,
+  - ambiguous reads are skipped when the current prefix's latest placed writer to that location is a conflicting writer that overwrites every currently available source,
+  - ambiguous source choices that ordering constraints force after the reader are eliminated before search,
+  - ambiguous source choices that are forced before a conflicting writer that must also precede the reader are eliminated before search,
+  - matching initial-value sources are eliminated when a conflicting writer must precede the reader,
+  - a remaining single viable non-initial source is promoted to a normal read-from edge.
+- Conservative failed-prefix memoization for committed-order search. Prefixes are memoized only when no complete committed serial order is reachable below that prefix, so observer-specific failures do not prune different prefix orders unsafely.
+- Explicit committed-order search limit reporting with `StmOpacityStatus::search_limit_exceeded`.
+- Runner integration through `ModelCheckingOptions::check_opacity()` and `StressOptions::check_opacity()`.
+- Lifetime policy setters:
+  - `ModelCheckingOptions::opacity_lifetime_policy(...)`
+  - `StressOptions::opacity_lifetime_policy(...)`
+  - `StmOpacityHistoryBuildOptions::lifetime_policy`
+- Search cap APIs:
+  - `ModelCheckingOptions::opacity_max_committed_orders(...)`
+  - `StressOptions::opacity_max_committed_orders(...)`
+- Structured result fields:
+  - `CheckResult::opacity_checked`
+  - `CheckResult::opacity_history`
+  - `CheckResult::opacity_result`
+  - `CheckResult::opacity_explanation`
+- Failure kind `FailureKind::opacity_violation`.
+- Combined failure traces when public ADT linearizability and STM opacity both fail for the retained run.
+- Failure trace `stm opacity:` sections with lifetime policy, ignored lifetime anomaly counters/samples, transaction counts, search-space upper bound, search limit, explored committed orders, memo entries, memo-pruned prefixes, read-from constraints, ambiguous read-from constraints/prunes, source-before-reader prunes, conflicting-writer prunes, eliminated ambiguous sources, shadowed ambiguous sources, eliminated matching initial sources, promoted ambiguous constraints, ordering-graph edges, transitive edges, candidate prunes, cycle status, observer checks, bounded read-from witnesses, ordering-graph samples, rejected prefix samples, locations, raw-address generations, explicit handle/object/field identity metadata, transactions, and access values.
+- Backend-neutral export helpers:
+  - `format_stm_opacity_history_json(...)`
+  - `format_stm_opacity_history_dot(...)`
+- Backend-neutral tests for:
+  - committed and read-only histories,
+  - read-own-write,
+  - aborted and live observers,
+  - dirty reads,
+  - stale reads under real-time order,
+  - inconsistent snapshots,
+  - incompatible observer prefix ordering,
+  - malformed metadata-only histories,
+  - unsupported value payloads,
+  - duplicate transaction ends,
+  - strict safe location destroy/re-register/reinitialize reuse,
+  - strict destroyed-location access and unsafe live lifetime reuse,
+  - default value-history handling for raw destroyed-location access,
+  - default value-history handling for live raw-address reuse where downstream impossible values still fail opacity,
+  - embedded fields in CRTP-managed objects,
+  - standalone self-owned transactional fields,
+  - non-quiescent address reuse with distinct explicit handles,
+  - raw-address-only reuse that remains malformed in strict mode when stable handles are required,
+  - mixed raw-address and explicit-handle histories for distinct locations,
+  - committed-prefix memoization,
+  - read-from constraint pruning,
+  - ambiguous read-from pruning and fallback,
+  - ambiguous source elimination and promotion,
+  - ambiguous source shadowing by forced conflicting writers,
+  - matching initial-source elimination by forced conflicting writers,
+  - generated larger ambiguous read-from spaces,
+  - seeded generated ambiguous read-from matrices,
+  - generated multi-reader/multi-location ambiguous read-from matrices,
+  - generated shadowed-source matrices,
+  - generated retry-heavy logical transaction histories,
+  - generated larger retry observer matrices,
+  - generated long observer chains,
+  - generated search-limit, memoization, and mixed possible/impossible histories,
+  - generated paired possible/impossible cycle-shaped histories,
+  - generated wider observer search-limit histories,
+  - ordering-graph cycle rejection,
+  - larger observer chains,
+  - repeated logical transaction attempts/retries,
+  - ambiguous read-from candidates,
+  - simultaneous public linearizability and opacity failures,
+  - multi-location impossible read-from cycles,
+  - opacity failure independent of public ADT linearizability.
+- Optional Multiverse adapter coverage for counter, contended/high-contention counter retries, snapshot reads during retry contention, tiny-set, bank, read-only/read-heavy bank snapshots, direct snapshot transaction bank totals with bounded updater detector behavior, same-address field reuse, shared-array smoke scenarios, and a constant-total shared-array snapshot/updater detector that reports inconsistent direct snapshot results as invalid public results.
+
+## Current Opacity Model
+
+For each retained run, Lincheck++ builds a transaction history and asks whether there exists a serial explanation satisfying:
+
+- Committed transactions appear in a serial order that respects visible transaction real-time edges.
+- Before backtracking, the verifier derives a conservative committed-transaction ordering graph from visible real-time edges and non-ambiguous read-from constraints. The graph is transitive-closed; cycles are immediate opacity violations, and candidates blocked by unplaced predecessors are skipped during search.
+- Under the default `value_history_only` lifetime policy, raw-address-only locations are value-history logical locations. Raw destroy hooks, accesses after raw destroy, raw reuse while transactions are live, and raw/handle overlap are recorded as ignored lifetime anomalies where possible, not used to reject the history. The verifier still checks the resulting value-bearing reads/writes for opacity.
+- Under `strict_lifetimes`, raw-address-only reuse is represented as a new location generation only after the old generation is destroyed and no transaction is live. Accessing a destroyed raw generation, destroying a raw-address location while transactions are live, reusing a raw address during a live transaction, or mixing ambiguous raw/handle identity is malformed.
+- Explicit handles can represent non-quiescent reuse when every location lifecycle/read/write event carries an unambiguous stable handle. For embedded fields, the intended identity is object lifetime plus field ID. For standalone `tx_field<T>`, the field object itself is the allocation unit. Raw and explicit identities can coexist in one history for distinct locations. Strict same-address live reuse must stay fully handle-based.
+- A transaction reads its own earlier write to a location when present.
+- Otherwise, a read observes the latest preceding committed write to that location, or the registered initial value.
+- Aborted and live transaction attempts are observers that must fit at a serial prefix.
+- Observer writes are visible only to later reads in the same observer attempt.
+- Observer prefix choices must respect visible real-time order against committed transactions and against other observers.
+- Live transactions at the end of the retained history are checked as partial aborted observers.
+
+The read-from pruning is deliberately conservative. It adds an edge when a non-initial read has exactly one possible committed final writer, or when an initial-value read has no matching committed final writer and therefore must precede conflicting writers. For ambiguous reads, the verifier records a disjunctive choice. If ordering constraints already force a possible source after the reader, that source is eliminated. If ordering constraints force a possible source before a conflicting writer that must also precede the reader, that source is eliminated because it cannot be the latest visible value. If the initial value matches but a conflicting writer must precede the reader, the implicit initial source is eliminated. If a non-initial ambiguous read has one viable committed source left, that source is promoted to a normal read-from edge. If the initial value is not a legal source, the reader cannot be placed until at least one possible committed source writer is already in the serial prefix. For all ambiguous choices, including choices where the initial value is legal, the reader is also skipped when the current prefix's latest placed writer to that location is a conflicting writer. Ambiguous cases that survive those prefix checks are left to the normal serial-state search. Diagnostics retain bounded samples for read-from witnesses, ambiguous read-from choices, source elimination/promotion, shadowed sources, initial-source elimination, conflicting-prefix prunes, ordering constraints, and rejected serial prefixes.
+
+This catches impossible committed orders, dirty reads, stale reads, read-from cycles, inconsistent snapshots, observer chains that depend on aborted/live writes, and malformed histories. In default value-history mode it does not directly catch reclamation/reuse-after-free bugs unless they surface as impossible transaction values or public ADT results.
+
+## Lifetime Policy and Non-Quiescent Reuse
+
+The default policy is value-history-first. It is intended for empirically checking a linearizable object built on top of an STM while assuming reclamation/address reuse is either correct or out of scope. Raw-address lifetime anomalies are retained as diagnostics so a user can see that the history glossed over lifecycle details, but those anomalies do not weaken the serial opacity verifier.
+
+Strict lifetime checking is opt-in. In strict mode, raw-address safe reuse is intentionally quiescent: after `tx_location_destroy(address)`, a later register/init of the same address creates a new generation only when no transaction is live. If any transaction is live, destroy/reuse remains malformed because an address alone is not enough to decide which generation an in-flight transactional access meant.
+
+Non-quiescent reuse is supported only through explicit stable identity. The implemented opt-in path is `LocationHandle`, either built directly by a backend, created with the non-intrusive backend helper APIs, or captured by the intrusive `tx_object<T>` / `tx_field<T>` helper layer. Sufficient hook data includes either:
+
+- a backend-provided generation or allocation token on every location register/init/destroy/read/write event, or
+- explicit per-access location handles that remain unique across reuse and are not recycled while any retained history might still reference them.
+
+The history builder treats raw addresses as logical value-history locations by default, or `(raw address, generation)` in strict mode. Explicit handles are preserved under both policies. For object-contained fields, the intrusive helper layer constructs the handle from object lifetime plus field ID; backend adapters can do the same non-intrusively from an allocation token plus field ID or field offset/name. Lincheck intentionally avoids reverse lookup from a field address to a containing object. Overlapping lifetimes are strictly modeled only when every access is unambiguously assigned to one explicit handle, and destroy/reuse events remain diagnostic lifecycle records rather than the source of identity. Without that token, non-quiescent reuse is unsafe to infer in strict mode because a read/write event after reuse could refer to the old lifetime, the new lifetime, or a stale/reclaimed object.
+
+## Multiverse Boundary
+
+Multiverse remains an optional adapter/example backend. Core Lincheck++ opacity APIs and tests depend only on generic `lincheck::stm` events.
+
+The local Multiverse patch and `include/lincheck/multiverse_hooks.hpp` bind Multiverse `tx_field<T>` reads/writes and lifecycle points into generic Lincheck STM hooks. The adapter now maps each Multiverse `tx_field<T>` to a self-owned handle-based location using the field object pointer as the allocation token, while preserving raw-address fallback behavior for paths that cannot provide stable handle identity. The smoke suite includes bounded application coverage for normal read transactions, direct `TX_IS_SNAPSHOT` transaction calls where the checkout exposes them, concurrent updater/read mixes, retry-heavy updater scenarios, and detector-style snapshot/updater cases that may either pass or report a public/opacity violation for the retained execution. Internal mode2 transitions remain a Multiverse implementation detail unless a test build exposes a stable public switch or retry threshold; the current tests document and exercise mode-adjacent public paths rather than mutating internal mode state directly. Multiverse-specific hook call sites, patching, tests, and examples should stay isolated from the core opacity verifier.
+
+## Remaining Work
+
+- Consider additional safe pruning for ambiguous/disjunctive read-from choices beyond source elimination, source shadowing, initial-source elimination, source-before-reader, and conflicting-latest-writer prefix prunes.
+- Consider richer backend adapters that can provide stronger owning-object identity than self-owned field handles where the STM exposes allocation-object metadata.
+- Add still larger generated histories only if the verifier needs randomized ambiguity, retry, observer, memoization, and search-limit spaces beyond the current deterministic small/medium matrices.
+- Add optional Multiverse adapter scenarios beyond bounded smoke/application coverage if a target workload needs higher contention, longer runtimes, or explicit public hooks for internal mode transitions.
+- Consider a fuller setup helper for cloning/checking out/applying the Multiverse patch. A lightweight `tools/check_multiverse_patch.sh` validation helper exists for patched checkouts.
 
 ## Non-Goals
 
-- No C++ weak-memory exploration. The first opacity checker assumes the same sequentially consistent execution model as the current scheduler.
-- No transparent compiler instrumentation.
+- No C++ weak-memory opacity proof.
+- No transparent compiler or whole-program instrumentation.
 - No proof for unhooked transactional accesses.
 - No checking of external side effects performed inside aborted transactions.
-- No initial support for open nesting, closed nesting, privatization safety, or memory reclamation correctness beyond the recorded transaction locations.
-
-## Opacity Model
-
-For each executed schedule, build a transaction history and check whether there exists a serial order satisfying:
-
-- All committed, aborted, and live transaction attempts respect real-time order when their begin/end intervals impose one.
-- Aborted and live transactions are included as observers and must read from a consistent serial state.
-- A transaction reads its own earlier write to a location when present.
-- Otherwise, each read observes the latest preceding committed write to that location, or the registered initial value.
-- Aborted and live transaction writes do not become visible to other transactions.
-- Live transactions at the end of the schedule are treated as aborted observers over their partial read/write history.
-
-This catches inconsistent snapshots, dirty reads from aborted transactions, stale reads that cannot be serialized, and transactions that observe impossible combinations before aborting.
-
-## Hook Surface
-
-Keep the existing scheduling and tracing hooks:
-
-- `lincheck::stm::tx_begin(read_only, start_clock_or_version)`
-- `lincheck::stm::tx_read(address, lock_slot, version)`
-- `lincheck::stm::tx_write(address, lock_slot)`
-- `lincheck::stm::tx_validate_begin()`
-- `lincheck::stm::tx_validate_end(success)`
-- `lincheck::stm::tx_lock_attempt(lock_slot)`
-- `lincheck::stm::tx_lock_acquired(lock_slot)`
-- `lincheck::stm::tx_lock_failed(lock_slot)`
-- `lincheck::stm::tx_lock_released(lock_slot)`
-- `lincheck::stm::tx_commit_attempt()`
-- `lincheck::stm::tx_commit_success(commit_clock)`
-- `lincheck::stm::tx_abort(reason)`
-- `lincheck::stm::tx_retry(reason, attempt)`
-
-Introduce these value and location hooks:
-
-```cpp
-namespace lincheck::stm {
-
-template <typename T>
-void tx_location_init(const void* address, const T& value);
-
-void tx_location_register(
-    const void* address,
-    std::string label = {},
-    std::string type_name = {}
-);
-
-void tx_location_destroy(const void* address);
-
-template <typename T>
-void tx_read_value(
-    const void* address,
-    const T& value,
-    std::uint64_t lock_slot = 0,
-    std::uint64_t version = 0
-);
-
-template <typename T>
-void tx_write_value(
-    const void* address,
-    const T& value,
-    std::uint64_t lock_slot = 0
-);
-
-void tx_attempt_metadata(
-    std::uint64_t logical_transaction_id,
-    int attempt
-);
-
-} // namespace lincheck::stm
-```
-
-Hook semantics:
-
-- `tx_location_init` records the initial value for a logical transactional location. It should be emitted before any transaction can read or write the location.
-- `tx_location_register` gives the location a stable diagnostic label and optional type name. It is useful but not required for verification.
-- `tx_location_destroy` lets the history builder detect address reuse and close a location lifetime. Initial implementation can reject histories that reuse a destroyed address.
-- `tx_read_value` replaces `tx_read` for opacity-enabled backends. It records the observed value and still acts as a scheduler switch point.
-- `tx_write_value` replaces `tx_write` for opacity-enabled backends. It records the value placed in the transaction's write set and still acts as a scheduler switch point.
-- `tx_attempt_metadata` is optional metadata for STMs that distinguish logical transactions from retry attempts. Opacity can treat every retry attempt as a separate transaction, but this metadata makes traces and failures easier to read.
-
-No separate read-own-write hook is planned. The history builder can infer read-own-write behavior when a `tx_read_value` observes a location already written by the same transaction attempt.
-
-All value hooks should convert values through `lincheck::Value` or the same value-adapter mechanism used for operation results. If a location value cannot be represented, opacity checking should fail fast for that run with an explanatory warning instead of silently ignoring the location.
-
-## Multiverse Hook Macros
-
-Extend `include/lincheck/multiverse_hooks.hpp` and `third_party/mvcc_tm-lincheck-hooks.patch` with no-op defaults and Lincheck bindings for:
-
-- `MULTIVERSE_LINCHECK_TX_LOCATION_INIT(address, value)`
-- `MULTIVERSE_LINCHECK_TX_LOCATION_REGISTER(address, label, type_name)`
-- `MULTIVERSE_LINCHECK_TX_LOCATION_DESTROY(address)`
-- `MULTIVERSE_LINCHECK_TX_READ_VALUE(address, value, lock_slot, version)`
-- `MULTIVERSE_LINCHECK_TX_WRITE_VALUE(address, value, lock_slot)`
-- `MULTIVERSE_LINCHECK_TX_ATTEMPT_METADATA(logical_transaction_id, attempt)`
-
-For Multiverse, prefer the logical `tx_field<T>` address as the transaction location identity, not the lock-table slot. The lock slot should remain metadata. The patch should hook:
-
-- `tx_field<T>` construction or initialization paths for `TX_LOCATION_INIT`.
-- `tx_field<T>::load()` after the value and version are known for `TX_READ_VALUE`.
-- `tx_field<T>::store(value)` when the write-set entry is created or updated for `TX_WRITE_VALUE`.
-- transaction retry paths for attempt metadata when Multiverse exposes a retry count.
-- destruction only if the target has a reliable destruction path; otherwise document that address reuse is unsupported for opacity runs.
-
-## Data Structures
-
-Add structured opacity data alongside existing `CheckResult::stm_events`:
-
-```cpp
-enum class StmTransactionOutcome {
-    committed,
-    aborted,
-    live
-};
-
-struct StmReadObservation {
-    StableLocationId location;
-    Value value;
-    std::size_t event_index;
-    std::optional<std::uint64_t> version;
-    std::optional<std::uint64_t> lock_slot;
-    bool from_own_write = false;
-};
-
-struct StmWriteObservation {
-    StableLocationId location;
-    Value value;
-    std::size_t event_index;
-    std::optional<std::uint64_t> lock_slot;
-};
-
-struct StmTransactionAttempt {
-    std::uint64_t transaction_id = 0;
-    std::uint64_t logical_transaction_id = 0;
-    int attempt = 0;
-    int thread_id = -1;
-    OperationContext operation;
-    StmTransactionOutcome outcome = StmTransactionOutcome::live;
-    std::size_t begin_event_index = 0;
-    std::optional<std::size_t> end_event_index;
-    std::vector<StmReadObservation> reads;
-    std::vector<StmWriteObservation> writes;
-};
-
-struct StmOpacityHistory {
-    std::map<StableLocationId, Value> initial_values;
-    std::vector<StmTransactionAttempt> transactions;
-    EventDependencyGraph event_dependencies;
-};
-```
-
-The exact names can change during implementation, but the important requirement is that opacity gets a normalized transaction-attempt history rather than re-parsing formatted trace text.
-
-## History Builder
-
-Build `StmOpacityHistory` from retained structured STM events after each run:
-
-1. Group events by `transaction_id`.
-2. Attach active public `OperationContext` metadata when available.
-3. Record begin/end event indexes and transaction outcome.
-4. Convert read/write value hooks into per-location observations.
-5. Collapse multiple writes to the same location to the last write for global visibility, while retaining the full event list for diagnostics.
-6. Mark transactions with a begin but no commit/abort as `live`.
-7. Validate that every read location has an initial value or a prior candidate committed write.
-8. Validate that destroyed and re-registered locations are not reused unless location lifetimes are modeled.
-
-The builder should report malformed histories separately from opacity violations, for example missing `tx_begin`, duplicate commit/abort, read outside a transaction, unsupported value type, or missing initial value.
-
-## Opacity Verifier
-
-Implement a dedicated verifier, separate from `LinearizabilityVerifier`.
-
-Initial algorithm:
-
-1. Split transactions into committed mutators and aborted/live observers.
-2. Build real-time edges from transaction begin/end event indexes and operation clocks when available.
-3. Backtrack over committed transaction serial orders that respect real-time edges.
-4. Maintain a serial state map from location to `Value`.
-5. For a committed transaction, verify each read against its own prior writes or the current serial state, then apply its final write-set to the serial state.
-6. For each aborted/live observer, search for an insertion point among committed transactions that respects real-time constraints and makes all of its reads consistent. Observer writes affect only its own subsequent reads.
-7. Memoize failed states by remaining committed set, serial state hash, and satisfied observer set.
-
-This brute-force verifier is acceptable for the same small bounded histories where model checking is useful. Later optimizations can derive read-from candidates and solve an ordering-constraint graph before backtracking.
-
-## API Integration
-
-Add opt-in runner configuration:
-
-```cpp
-auto result = lincheck::ModelCheckingOptions()
-    .check_opacity()
-    .check(spec);
-```
-
-Also support stress runs:
-
-```cpp
-auto result = lincheck::StressOptions()
-    .check_opacity()
-    .check(spec);
-```
-
-Add result fields:
-
-- `CheckResult::opacity_history`
-- `CheckResult::opacity_explanation`
-- `CheckResult::opacity_result`
-
-Add a failure kind:
-
-- `FailureKind::opacity_violation`
-
-When both ADT linearizability and opacity fail, prefer reporting both explanations in the trace. The primary failure kind can be controlled by option order later; the first implementation should prioritize `opacity_violation` when opacity checking is explicitly enabled, because opacity bugs can be invisible at the public ADT boundary for small scenarios.
-
-## Failure Reporting
-
-Failure traces should include:
-
-- `opacity violation:` summary.
-- rejected transaction ID, logical transaction ID, attempt, thread, and public operation context.
-- rejected read location/value.
-- candidate serial states considered.
-- committed transactions that block serialization.
-- transaction history section with begin/end outcome, reads, writes, and event indexes.
-- compact read-from explanation when available.
-
-Export helpers should mirror the existing dependency graph helpers:
-
-- `format_opacity_history_json(...)`
-- `format_opacity_history_dot(...)`
-
-## Tests
-
-Unit tests over hand-built histories:
-
-- committed write then committed read passes.
-- read-only transaction over two locations sees a consistent snapshot.
-- read-own-write passes.
-- aborted transaction with consistent reads passes.
-- live transaction with consistent partial reads passes.
-- dirty read from an aborted writer fails.
-- read-only transaction that observes `x=1, y=0` after one committed transaction wrote `x=1, y=1` fails.
-- committed transaction that reads a stale value forbidden by real-time order fails.
-- missing initial value is reported as malformed history, not as opacity violation.
-
-Runtime tests with a small toy STM:
-
-- correct deferred-update STM passes opacity and ADT linearizability.
-- broken dirty-read STM fails opacity even when public ADT output happens to look linearizable.
-- broken read-only snapshot STM fails opacity.
-- retrying transaction histories keep attempts separate.
-
-Multiverse tests:
-
-- existing tiny-set and bank examples pass with opacity enabled under small scenarios.
-- shared-array smoke remains low contention and passes opacity.
-- value hooks appear in `stm events:` and opacity history sections.
-- a deliberately broken local test STM, not Multiverse itself, should provide most negative coverage so the upstream patch is not intentionally corrupted.
-
-## Implementation Phases
-
-### Phase 1: Value Hook Plumbing
-
-- Add value fields to `stm::Event` and `StmEventRecord`.
-- Add `tx_location_init`, `tx_location_register`, `tx_location_destroy`, `tx_read_value`, `tx_write_value`, and `tx_attempt_metadata`.
-- Keep old `tx_read` and `tx_write` as metadata-only scheduling hooks.
-- Preserve existing tests and traces when opacity is disabled.
-
-### Phase 2: History Builder
-
-- Build `StmOpacityHistory` from structured events.
-- Add malformed-history diagnostics.
-- Add JSON/text formatting for transaction histories.
-- Add hand-authored history-builder tests.
-
-### Phase 3: Opacity Verifier
-
-- Implement the brute-force opacity verifier.
-- Add hand-authored opacity verifier tests.
-- Add clear explanations for rejected reads and impossible observer placements.
-
-### Phase 4: Runner Integration
-
-- Add `check_opacity()` to model-checking and stress options.
-- Run opacity verification after each schedule or stress invocation when enabled.
-- Add `FailureKind::opacity_violation`.
-- Include opacity sections in failure traces.
-
-### Phase 5: Toy STM Coverage
-
-- Add a small test-only STM with value hooks.
-- Add passing and intentionally broken variants.
-- Confirm opacity can fail independently from public ADT linearizability.
-
-### Phase 6: Multiverse Value Hooks
-
-- Extend the Multiverse hook patch and binding header with value/location macros.
-- Hook `tx_field<T>` reads and writes with logical location identity and values.
-- Add initial-value capture for Multiverse test objects.
-- Enable opacity checks for small Multiverse smoke scenarios.
-
-### Phase 7: Documentation and Limits
-
-- Update `README.md` and `USING_CPP_LINCHECK.md`.
-- Document hook requirements and unsupported cases.
-- Document that opacity checking is bounded by visible hooks and scheduler limits.
-
-## Acceptance Criteria
-
-- Existing linearizability, stress, source-audit, and Multiverse tests still pass with opacity disabled.
-- Hand-authored opacity histories cover committed, aborted, and live transactions.
-- Broken toy STM variants fail with `FailureKind::opacity_violation`.
-- Multiverse tiny-set and bank smoke scenarios pass opacity checking with value hooks.
-- Failure traces show enough transaction/read/write detail to diagnose the opacity violation without inspecting raw event vectors.
-- Missing hooks or unsupported values produce explicit malformed-history diagnostics, not silent false passes.
-
-## Risks
-
-- Hook placement in an STM backend is easy to get subtly wrong. A read hook must report the value actually returned to transaction code, and a write hook must report the value placed in that transaction's write set.
-- Initial values are essential. If constructors run outside a Lincheck runtime, the checker may need either construction-time runtime capture or a `TestSpec` callback to enumerate initial STM locations.
-- Address reuse can make histories unsound unless location lifetimes are recorded.
-- The verifier can become expensive as transaction count and location count grow. Keep first tests small and add pruning only after correctness is established.
-- Some STMs expose snapshot clocks or versions that are useful diagnostics but should not be trusted as the proof by themselves; the verifier should prove consistency from values and ordering constraints.
+- No initial support for open nesting, closed nesting, privatization safety, or default memory reclamation correctness. Reclamation/address-reuse checking is available only through opt-in strict lifetime instrumentation and remains bounded by the emitted hooks.
+
+## Acceptance Baseline
+
+- Core opacity tests pass without Multiverse present.
+- Multiverse opacity smoke tests pass when the patched checkout is present.
+- Existing behavior with `check_opacity()` disabled remains unchanged.
+- Default and Clang CTest suites pass.
+- `git diff --check` passes.
+- The Multiverse patch remains reversible and matches the patched checkout.
