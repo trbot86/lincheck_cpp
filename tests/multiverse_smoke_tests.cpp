@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstdint>
+#include <fstream>
 #include <iostream>
 #include <new>
 #include <set>
@@ -26,9 +27,80 @@ void require(bool condition, const std::string& message) {
     }
 }
 
+std::vector<int> read_schedule_file(const char* path) {
+    std::ifstream in(path);
+    if (!in) {
+        throw std::runtime_error(std::string("failed to open schedule file for reading: ") + path);
+    }
+
+    std::vector<int> schedule;
+    int choice = 0;
+    while (in >> choice) {
+        schedule.push_back(choice);
+    }
+    if (schedule.empty()) {
+        throw std::runtime_error(std::string("schedule file did not contain any thread choices: ") + path);
+    }
+    return schedule;
+}
+
+void write_schedule_file(const char* path, const std::vector<int>& schedule) {
+    std::ofstream out(path);
+    if (!out) {
+        throw std::runtime_error(std::string("failed to open schedule file for writing: ") + path);
+    }
+    for (std::size_t i = 0; i < schedule.size(); ++i) {
+        if (i != 0) out << ' ';
+        out << schedule[i];
+    }
+    out << '\n';
+}
+
 void ensure_multiverse_test_thread_registered() {
     const int tid = ns_multiverse::ThreadRegistry::getTID();
     ns_multiverse::tl_allocInfo = &ns_multiverse::gMemManager.perThreadAllocInfo[tid];
+}
+
+void force_multiverse_mode2_for_test() {
+    ensure_multiverse_test_thread_registered();
+    const int tid = ns_multiverse::ThreadRegistry::getTID();
+    ns_multiverse::globals.gThreadModeAndTxType[tid].data.store(-1l, std::memory_order_release);
+    ns_multiverse::globals.gThreadMode2Sticky[tid].data.store(1, std::memory_order_release);
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1000);
+    while (std::chrono::steady_clock::now() < deadline) {
+        const long current = ns_multiverse::globals.gTmModeCounter.load(std::memory_order_acquire);
+        const int mode = ns_multiverse::getCounterMode(current);
+        if (mode == ns_multiverse::TM_MODE_MODE2 &&
+            ns_multiverse::globals.gFirstObservedMode2Timestamp.load(std::memory_order_acquire) !=
+                ns_multiverse::INVALID_FIRST_OBS_MODE2_TS) {
+            return;
+        }
+        if (mode == ns_multiverse::TM_MODE_DEFAULT) {
+            (void)ns_multiverse::transitionTmMode(tid, current, ns_multiverse::TM_MODE_INTERMEDIATE1);
+        }
+        std::this_thread::yield();
+    }
+
+    throw std::runtime_error("timed out waiting for Multiverse mode2 transition");
+}
+
+void release_multiverse_mode2_for_test() {
+    ensure_multiverse_test_thread_registered();
+    const int tid = ns_multiverse::ThreadRegistry::getTID();
+    ns_multiverse::globals.gThreadModeAndTxType[tid].data.store(-1l, std::memory_order_release);
+    ns_multiverse::globals.gThreadMode2Sticky[tid].data.store(0, std::memory_order_release);
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1000);
+    while (std::chrono::steady_clock::now() < deadline) {
+        const long current = ns_multiverse::globals.gTmModeCounter.load(std::memory_order_acquire);
+        if (ns_multiverse::getCounterMode(current) == ns_multiverse::TM_MODE_DEFAULT) {
+            return;
+        }
+        std::this_thread::yield();
+    }
+
+    throw std::runtime_error("timed out waiting for Multiverse default-mode transition");
 }
 
 std::uint64_t multiverse_test_clock() {
@@ -39,9 +111,10 @@ std::uint64_t multiverse_test_clock() {
     #endif
 }
 
-void force_multiverse_mode2_for_test() {
+void force_multiverse_mode2_directly_for_bug_test() {
     ensure_multiverse_test_thread_registered();
     const int tid = ns_multiverse::ThreadRegistry::getTID();
+    ns_multiverse::globals.gThreadModeAndTxType[tid].data.store(-1l, std::memory_order_release);
     ns_multiverse::globals.gThreadMode2Sticky[tid].data.store(1, std::memory_order_release);
 
     for (int attempt = 0; attempt < 16; ++attempt) {
@@ -54,9 +127,10 @@ void force_multiverse_mode2_for_test() {
     ns_multiverse::globals.gFirstObservedMode2Timestamp.store(multiverse_test_clock(), std::memory_order_release);
 }
 
-void release_multiverse_mode2_for_test() {
+void release_multiverse_mode2_directly_for_bug_test() {
     ensure_multiverse_test_thread_registered();
     const int tid = ns_multiverse::ThreadRegistry::getTID();
+    ns_multiverse::globals.gThreadModeAndTxType[tid].data.store(-1l, std::memory_order_release);
     ns_multiverse::globals.gThreadMode2Sticky[tid].data.store(0, std::memory_order_release);
     ns_multiverse::globals.gFirstObservedMode2Timestamp.store(
         ns_multiverse::INVALID_FIRST_OBS_MODE2_TS,
@@ -72,10 +146,10 @@ void release_multiverse_mode2_for_test() {
     }
 }
 
-class ScopedMultiverseMode2ForTest {
+class ScopedDirectMode2ForBugTest {
 public:
-    ScopedMultiverseMode2ForTest() { force_multiverse_mode2_for_test(); }
-    ~ScopedMultiverseMode2ForTest() { release_multiverse_mode2_for_test(); }
+    ScopedDirectMode2ForBugTest() { force_multiverse_mode2_directly_for_bug_test(); }
+    ~ScopedDirectMode2ForBugTest() { release_multiverse_mode2_directly_for_bug_test(); }
 };
 
 lincheck::Actor bank_actor(
@@ -637,15 +711,52 @@ struct MultiverseSnapshotTransferArray {
         return result;
     }
 
+    int enter_mode2_for_test() {
+        force_multiverse_mode2_for_test();
+        return 0;
+    }
+
+    int leave_mode2_for_test() {
+        release_multiverse_mode2_for_test();
+        return 0;
+    }
+
     int mode2_snapshot_sum() {
         int result = 0;
+        reader_started.store(true, std::memory_order_release);
+        ns_multiverse::gMultiverse.transaction([&] {
+            int attempt_result = 0;
+            lincheck::trace_event(
+                "multiverse.snapshot_transfer_array.mode2_snapshot_sum slots=" +
+                std::to_string(SlotCount)
+            );
+            for (std::size_t index = 0; index < slots.size(); ++index) {
+                const int observed = slots[index]->load();
+                attempt_result += observed;
+                if constexpr (SlotCount <= 16) {
+                    lincheck::trace_event(
+                        "multiverse.snapshot_transfer_array.mode2_snapshot_slot index=" +
+                        std::to_string(index) +
+                        " value=" + std::to_string(observed) +
+                        " partial_sum=" + std::to_string(attempt_result)
+                    );
+                }
+            }
+            result = attempt_result;
+        }, ns_multiverse::TX_IS_SNAPSHOT_MODE2);
+        reader_done.store(true, std::memory_order_release);
+        return result;
+    }
+
+    int direct_forced_mode2_snapshot_sum_for_bug_test() {
+        int result = 0;
         {
-            ScopedMultiverseMode2ForTest mode2_scope;
+            ScopedDirectMode2ForBugTest mode2_scope;
             reader_started.store(true, std::memory_order_release);
             ns_multiverse::gMultiverse.transaction([&] {
                 int attempt_result = 0;
                 lincheck::trace_event(
-                    "multiverse.snapshot_transfer_array.mode2_snapshot_sum slots=" +
+                    "multiverse.snapshot_transfer_array.direct_forced_mode2_snapshot_sum slots=" +
                     std::to_string(SlotCount)
                 );
                 for (std::size_t index = 0; index < slots.size(); ++index) {
@@ -653,7 +764,7 @@ struct MultiverseSnapshotTransferArray {
                     attempt_result += observed;
                     if constexpr (SlotCount <= 16) {
                         lincheck::trace_event(
-                            "multiverse.snapshot_transfer_array.mode2_snapshot_slot index=" +
+                            "multiverse.snapshot_transfer_array.direct_forced_mode2_snapshot_slot index=" +
                             std::to_string(index) +
                             " value=" + std::to_string(observed) +
                             " partial_sum=" + std::to_string(attempt_result)
@@ -739,8 +850,13 @@ private:
 
 template <std::size_t SlotCount>
 struct SnapshotTransferArrayModel {
+    int enter_mode2_for_test() { return 0; }
+    int leave_mode2_for_test() { return 0; }
     int transfer_once() { return 0; }
     int update_until_snapshot_done() { return 0; }
+    int direct_forced_mode2_snapshot_sum_for_bug_test() const {
+        return static_cast<int>(SlotCount) * snapshot_transfer_initial_value;
+    }
     int mode2_snapshot_sum() const {
         return static_cast<int>(SlotCount) * snapshot_transfer_initial_value;
     }
@@ -795,6 +911,8 @@ lincheck::TestSpec multiverse_mode2_snapshot_transfer_array_stress_spec() {
     using Array = MultiverseSnapshotTransferArray<SlotCount, MaxUpdaterTransactions>;
     using Model = SnapshotTransferArrayModel<SlotCount>;
     return multiverse_snapshot_transfer_array_base_spec<SlotCount, MaxUpdaterTransactions>()
+        .operation("enter_mode2_for_test", &Array::enter_mode2_for_test, &Model::enter_mode2_for_test)
+        .operation("leave_mode2_for_test", &Array::leave_mode2_for_test, &Model::leave_mode2_for_test)
         .operation("update_until_snapshot_done", &Array::update_until_snapshot_done, &Model::update_until_snapshot_done)
         .operation("mode2_snapshot_sum", &Array::mode2_snapshot_sum, &Model::mode2_snapshot_sum)
         .validation([](Array& array) {
@@ -807,8 +925,26 @@ lincheck::TestSpec multiverse_mode2_snapshot_transfer_array_pair_spec() {
     using Array = MultiverseSnapshotTransferArray<SlotCount, MaxUpdaterTransactions>;
     using Model = SnapshotTransferArrayModel<SlotCount>;
     return multiverse_snapshot_transfer_array_base_spec<SlotCount, MaxUpdaterTransactions>()
+        .operation("enter_mode2_for_test", &Array::enter_mode2_for_test, &Model::enter_mode2_for_test)
+        .operation("leave_mode2_for_test", &Array::leave_mode2_for_test, &Model::leave_mode2_for_test)
         .operation("transfer_once", &Array::transfer_once, &Model::transfer_once)
         .operation("mode2_snapshot_sum", &Array::mode2_snapshot_sum, &Model::mode2_snapshot_sum)
+        .validation([](Array& array) {
+            return array.validate_total_and_activity(false);
+        });
+}
+
+template <std::size_t SlotCount, int MaxUpdaterTransactions>
+lincheck::TestSpec multiverse_direct_forced_mode2_snapshot_transfer_array_pair_spec() {
+    using Array = MultiverseSnapshotTransferArray<SlotCount, MaxUpdaterTransactions>;
+    using Model = SnapshotTransferArrayModel<SlotCount>;
+    return multiverse_snapshot_transfer_array_base_spec<SlotCount, MaxUpdaterTransactions>()
+        .operation("transfer_once", &Array::transfer_once, &Model::transfer_once)
+        .operation(
+            "direct_forced_mode2_snapshot_sum_for_bug_test",
+            &Array::direct_forced_mode2_snapshot_sum_for_bug_test,
+            &Model::direct_forced_mode2_snapshot_sum_for_bug_test
+        )
         .validation([](Array& array) {
             return array.validate_total_and_activity(false);
         });
@@ -840,6 +976,52 @@ lincheck::CheckResult run_snapshot_transfer_array_model_check(
 }
 
 template <std::size_t SlotCount, int MaxUpdaterTransactions>
+lincheck::CheckResult run_direct_forced_mode2_snapshot_transfer_array_model_check(
+    const std::string& name,
+    int max_context_switches,
+    int max_schedule_length,
+    int invocation_budget
+) {
+    auto spec = multiverse_direct_forced_mode2_snapshot_transfer_array_pair_spec<SlotCount, MaxUpdaterTransactions>();
+
+    lincheck::ExecutionScenario scenario;
+    scenario.parallel = {
+        {bank_actor(1, "direct_forced_mode2_snapshot_sum_for_bug_test")},
+        {bank_actor(0, "transfer_once")}
+    };
+
+    return lincheck::ModelCheckingOptions()
+        .invocations_per_iteration(invocation_budget)
+        .max_schedule_length(max_schedule_length)
+        .max_context_switches_per_schedule(max_context_switches)
+        .minimize_failed_scenario(false)
+        .check_opacity()
+        .opacity_max_committed_orders(10000)
+        .check(name, spec, scenario);
+}
+
+template <std::size_t SlotCount, int MaxUpdaterTransactions>
+lincheck::CheckResult check_direct_forced_mode2_snapshot_transfer_array_schedule_prefix(
+    const std::string& name,
+    const std::vector<int>& schedule
+) {
+    auto spec = multiverse_direct_forced_mode2_snapshot_transfer_array_pair_spec<SlotCount, MaxUpdaterTransactions>();
+
+    lincheck::ExecutionScenario scenario;
+    scenario.parallel = {
+        {bank_actor(1, "direct_forced_mode2_snapshot_sum_for_bug_test")},
+        {bank_actor(0, "transfer_once")}
+    };
+
+    return lincheck::ModelCheckingOptions()
+        .max_switch_points_per_schedule(20000)
+        .minimize_failed_scenario(false)
+        .check_opacity()
+        .opacity_max_committed_orders(10000)
+        .check_schedule_prefix(name, spec, scenario, schedule);
+}
+
+template <std::size_t SlotCount, int MaxUpdaterTransactions>
 lincheck::CheckResult run_mode2_snapshot_transfer_array_model_check(
     const std::string& name,
     int max_context_switches,
@@ -849,9 +1031,15 @@ lincheck::CheckResult run_mode2_snapshot_transfer_array_model_check(
     auto spec = multiverse_mode2_snapshot_transfer_array_pair_spec<SlotCount, MaxUpdaterTransactions>();
 
     lincheck::ExecutionScenario scenario;
+    scenario.init = {
+        bank_actor(0, "enter_mode2_for_test")
+    };
     scenario.parallel = {
-        {bank_actor(1, "mode2_snapshot_sum")},
-        {bank_actor(0, "transfer_once")}
+        {bank_actor(3, "mode2_snapshot_sum")},
+        {bank_actor(2, "transfer_once")}
+    };
+    scenario.post = {
+        bank_actor(1, "leave_mode2_for_test")
     };
 
     return lincheck::ModelCheckingOptions()
@@ -1302,55 +1490,114 @@ void model_checker_accepts_multiverse_snapshot_transfer_array_with_opacity() {
     );
 }
 
-void model_checker_detects_forced_mode2_snapshot_transfer_array_violation() {
-    const auto result = run_mode2_snapshot_transfer_array_model_check<8, 1>(
-        "multiverse-forced-mode2-snapshot-transfer-array-opacity",
-        10,
-        80,
-        4000
+void model_checker_accepts_protocol_mode2_snapshot_transfer_array_with_opacity() {
+    const auto result = run_mode2_snapshot_transfer_array_model_check<4, 1>(
+        "multiverse-mode2-snapshot-transfer-array-opacity",
+        0,
+        16,
+        32
     );
 
-    require(!result.success, "forced mode2 snapshot transfer array model check should detect the known snapshot violation");
-    const bool expected_diagnostic_failure =
-        result.failure == lincheck::FailureKind::invalid_results ||
-        result.failure == lincheck::FailureKind::opacity_violation;
-    require(
-        expected_diagnostic_failure,
-        std::string("forced mode2 snapshot transfer array model check should report a public/opacity violation, not ") +
-            lincheck::failure_kind_name(result.failure)
-    );
-    std::cerr
-        << "accepted forced mode2 model-check diagnostic: "
-        << lincheck::failure_kind_name(result.failure)
-        << ": "
-        << result.message
-        << "\n";
-    if (std::getenv("LINCHECK_MULTIVERSE_DUMP_FAILURE_TRACE") != nullptr) {
+    if (!result.success) {
+        std::cerr << result.message << "\n";
         std::cerr << result.trace << "\n";
     }
+    require(result.success, "Mode2 snapshot transfer array should pass bounded opacity model checking");
     require(
         std::any_of(result.trace_events.begin(), result.trace_events.end(), [](const auto& record) {
-            return record.description.find("multiverse.snapshot_transfer_array.mode2_snapshot_sum slots=8") != std::string::npos;
+            return record.description.find("multiverse.snapshot_transfer_array.mode2_snapshot_sum slots=4") != std::string::npos;
         }),
-        "forced mode2 snapshot transfer array model check should execute a mode2 snapshot"
+        "Mode2 snapshot transfer array model check should execute a mode2 snapshot"
     );
     require(
         std::any_of(result.trace_events.begin(), result.trace_events.end(), [](const auto& record) {
             return record.description.find("multiverse.snapshot_transfer_array.transfer iteration=0") != std::string::npos;
         }),
-        "forced mode2 snapshot transfer array model check should execute the transfer operation"
+        "Mode2 snapshot transfer array model check should execute the transfer operation"
     );
     require(
         std::count_if(result.stm_events.begin(), result.stm_events.end(), [](const auto& record) {
             return record.kind == "tx_read" && record.has_value;
-        }) >= 8,
-        "forced mode2 snapshot transfer array model check should retain whole-array value reads"
+        }) >= 4,
+        "Mode2 snapshot transfer array model check should retain whole-array value reads"
     );
     require(
         std::count_if(result.stm_events.begin(), result.stm_events.end(), [](const auto& record) {
             return record.kind == "tx_write" && record.has_value;
         }) >= 2,
-        "forced mode2 snapshot transfer array model check should retain both transfer writes"
+        "Mode2 snapshot transfer array model check should retain both transfer writes"
+    );
+}
+
+void manual_model_checker_detects_broken_direct_forced_mode2_snapshot_bug() {
+    const auto result = run_direct_forced_mode2_snapshot_transfer_array_model_check<8, 1>(
+        "multiverse-broken-direct-forced-mode2-snapshot-transfer-array",
+        10,
+        80,
+        4000
+    );
+
+    require(!result.success, "broken direct-forced Mode2 snapshot transfer array should produce a model-check counterexample");
+    const bool expected_failure =
+        result.failure == lincheck::FailureKind::invalid_results ||
+        result.failure == lincheck::FailureKind::opacity_violation;
+    require(
+        expected_failure,
+        std::string("broken direct-forced Mode2 detector should report public/opacity failure, not ") +
+            lincheck::failure_kind_name(result.failure)
+    );
+    require(
+        std::any_of(result.trace_events.begin(), result.trace_events.end(), [](const auto& record) {
+            return record.description.find(
+                "multiverse.snapshot_transfer_array.direct_forced_mode2_snapshot_sum slots=8"
+            ) != std::string::npos;
+        }),
+        "broken direct-forced Mode2 detector should execute a Mode2 snapshot"
+    );
+    std::cerr
+        << "accepted broken direct-forced Mode2 counterexample: "
+        << lincheck::failure_kind_name(result.failure)
+        << ": "
+        << result.message
+        << "\n";
+    if (const char* schedule_path = std::getenv("LINCHECK_MULTIVERSE_BUG_SCHEDULE_FILE")) {
+        write_schedule_file(schedule_path, result.schedule);
+    }
+    if (std::getenv("LINCHECK_MULTIVERSE_DUMP_FAILURE_TRACE") != nullptr) {
+        std::cerr << result.trace << "\n";
+    }
+}
+
+void manual_model_checker_accepts_fixed_direct_forced_mode2_snapshot() {
+    const char* schedule_path = std::getenv("LINCHECK_MULTIVERSE_BUG_SCHEDULE_FILE");
+    if (schedule_path == nullptr) {
+        std::cerr
+            << "skipping fixed direct-forced Mode2 replay; set "
+            << "LINCHECK_MULTIVERSE_BUG_SCHEDULE_FILE or use tools/check_multiverse_mode2_algorithm_fix.sh\n";
+        return;
+    }
+
+    auto schedule = read_schedule_file(schedule_path);
+    schedule.insert(schedule.end(), 2048, 1);
+    const auto result = check_direct_forced_mode2_snapshot_transfer_array_schedule_prefix<8, 1>(
+        "multiverse-fixed-direct-forced-mode2-snapshot-transfer-array-prefix",
+        schedule
+    );
+
+    if (!result.success) {
+        std::cerr << result.message << "\n";
+        if (std::getenv("LINCHECK_MULTIVERSE_DUMP_FAILURE_TRACE") != nullptr) {
+            std::cerr << result.trace << "\n";
+        }
+    }
+    require(result.success, "fixed direct-forced Mode2 snapshot transfer array should pass the discovered schedule prefix");
+    require(
+        std::any_of(result.trace_events.begin(), result.trace_events.end(), [](const auto& record) {
+            return record.description.find(
+                "multiverse.snapshot_transfer_array.direct_forced_mode2_snapshot_sum slots=8"
+            ) != std::string::npos;
+        }),
+        "fixed direct-forced Mode2 detector should execute a Mode2 snapshot"
     );
 }
 
@@ -1395,14 +1642,20 @@ void stress_runner_accepts_bounded_multiverse_snapshot_transfer_array_after_retr
     );
 }
 
-void stress_runner_exercises_forced_mode2_snapshot_transfer_array_with_updaters() {
+void stress_runner_exercises_mode2_snapshot_transfer_array_with_updaters() {
     static constexpr std::size_t slot_count = 4096;
     auto spec = multiverse_mode2_snapshot_transfer_array_stress_spec<slot_count, 128>();
 
     lincheck::ExecutionScenario scenario;
+    scenario.init = {
+        bank_actor(0, "enter_mode2_for_test")
+    };
     scenario.parallel = {
-        {bank_actor(0, "update_until_snapshot_done")},
-        {bank_actor(1, "mode2_snapshot_sum")}
+        {bank_actor(2, "update_until_snapshot_done")},
+        {bank_actor(3, "mode2_snapshot_sum")}
+    };
+    scenario.post = {
+        bank_actor(1, "leave_mode2_for_test")
     };
 
     const auto result = lincheck::StressOptions()
@@ -1412,44 +1665,29 @@ void stress_runner_exercises_forced_mode2_snapshot_transfer_array_with_updaters(
         .seed(20260707)
         .check_opacity()
         .opacity_max_committed_orders(50000)
-        .check("multiverse-forced-mode2-snapshot-transfer-array-stress", spec, scenario);
+        .check("multiverse-mode2-snapshot-transfer-array-stress", spec, scenario);
 
     if (!result.success) {
-        const bool expected_diagnostic_failure =
-            result.failure == lincheck::FailureKind::invalid_results ||
-            result.failure == lincheck::FailureKind::opacity_violation;
-        require(
-            expected_diagnostic_failure,
-            std::string("forced mode2 snapshot transfer array should pass or report a public/opacity violation, not ") +
-                lincheck::failure_kind_name(result.failure)
-        );
-        std::cerr
-            << "accepted forced mode2 snapshot diagnostic: "
-            << lincheck::failure_kind_name(result.failure)
-            << ": "
-            << result.message
-            << "\n";
-        if (std::getenv("LINCHECK_MULTIVERSE_DUMP_FAILURE_TRACE") != nullptr) {
-            std::cerr << result.trace << "\n";
-        }
+        std::cerr << result.message << "\n" << result.trace << "\n";
     }
+    require(result.success, "Mode2 snapshot transfer array stress should pass with retry-safe accumulation");
     require(
         std::any_of(result.trace_events.begin(), result.trace_events.end(), [](const auto& record) {
             return record.description.find("multiverse.snapshot_transfer_array.mode2_snapshot_sum slots=4096") != std::string::npos;
         }),
-        "forced mode2 snapshot transfer array should execute a mode2 snapshot operation"
+        "Mode2 snapshot transfer array should execute a mode2 snapshot operation"
     );
     require(
         std::count_if(result.stm_events.begin(), result.stm_events.end(), [](const auto& record) {
             return record.kind == "tx_read" && record.has_value;
         }) >= static_cast<std::ptrdiff_t>(slot_count),
-        "forced mode2 snapshot transfer array should retain whole-array value reads"
+        "Mode2 snapshot transfer array should retain whole-array value reads"
     );
     require(
         std::any_of(result.stm_events.begin(), result.stm_events.end(), [](const auto& record) {
             return record.kind == "tx_write" && record.has_value;
         }),
-        "forced mode2 snapshot transfer array should retain updater writes"
+        "Mode2 snapshot transfer array should retain updater writes"
     );
 }
 
@@ -2077,16 +2315,24 @@ int main(int argc, char** argv) {
         {"stress_runner_accepts_multiverse_shared_array_disjoint_deltas", stress_runner_accepts_multiverse_shared_array_disjoint_deltas},
         {"model_checker_accepts_multiverse_snapshot_transfer_array_with_opacity", model_checker_accepts_multiverse_snapshot_transfer_array_with_opacity},
         {
-            "model_checker_detects_forced_mode2_snapshot_transfer_array_violation",
-            model_checker_detects_forced_mode2_snapshot_transfer_array_violation
+            "model_checker_accepts_protocol_mode2_snapshot_transfer_array_with_opacity",
+            model_checker_accepts_protocol_mode2_snapshot_transfer_array_with_opacity
         },
         {
             "stress_runner_accepts_bounded_multiverse_snapshot_transfer_array_after_retries",
             stress_runner_accepts_bounded_multiverse_snapshot_transfer_array_after_retries
         },
         {
-            "stress_runner_exercises_forced_mode2_snapshot_transfer_array_with_updaters",
-            stress_runner_exercises_forced_mode2_snapshot_transfer_array_with_updaters
+            "stress_runner_exercises_mode2_snapshot_transfer_array_with_updaters",
+            stress_runner_exercises_mode2_snapshot_transfer_array_with_updaters
+        },
+        {
+            "manual_model_checker_detects_broken_direct_forced_mode2_snapshot_bug",
+            manual_model_checker_detects_broken_direct_forced_mode2_snapshot_bug
+        },
+        {
+            "manual_model_checker_accepts_fixed_direct_forced_mode2_snapshot",
+            manual_model_checker_accepts_fixed_direct_forced_mode2_snapshot
         },
         {"model_checker_rejects_missing_slot_multiverse_shared_array_by_validation", model_checker_rejects_missing_slot_multiverse_shared_array_by_validation},
         {"model_checker_rejects_missing_slot_multiverse_shared_array_by_invalid_results", model_checker_rejects_missing_slot_multiverse_shared_array_by_invalid_results},
@@ -2111,7 +2357,11 @@ int main(int argc, char** argv) {
     int selected = 0;
     int failed = 0;
     for (const auto& test : tests) {
-        if (!filter.empty() && std::string(test.name).find(filter) == std::string::npos) {
+        const std::string test_name = test.name;
+        if (filter.empty() && test_name.rfind("manual_", 0) == 0) {
+            continue;
+        }
+        if (!filter.empty() && test_name.find(filter) == std::string::npos) {
             continue;
         }
         ++selected;

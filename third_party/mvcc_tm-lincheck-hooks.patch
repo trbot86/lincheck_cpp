@@ -1,5 +1,5 @@
 diff --git a/multiverse/multiverse.hpp b/multiverse/multiverse.hpp
-index 62dba0e..80a7a71 100644
+index 62dba0e..0f537e9 100644
 --- a/multiverse/multiverse.hpp
 +++ b/multiverse/multiverse.hpp
 @@ -42,0 +43,104 @@
@@ -134,34 +134,37 @@ index 62dba0e..80a7a71 100644
 +        MULTIVERSE_LINCHECK_TX_BEGIN(readOnlyTxn, myd->rClock);
 @@ -1598,0 +1715 @@ public:
 +            MULTIVERSE_LINCHECK_TX_COMMIT_ATTEMPT();
-@@ -1604,0 +1722 @@ public:
+@@ -1604,0 +1722,2 @@ public:
 +            MULTIVERSE_LINCHECK_TX_COMMIT_SUCCESS(myd->rClock);
-@@ -1608 +1726,4 @@ public:
++            unannounceThreadTmMode(myd->tid);
+@@ -1608 +1727,4 @@ public:
 -        if (!myd->readSet.validate(myd->rClock, tid)) {
 +        MULTIVERSE_LINCHECK_TX_VALIDATE_BEGIN();
 +        const bool readSetValid = myd->readSet.validate(myd->rClock, tid);
 +        MULTIVERSE_LINCHECK_TX_VALIDATE_END(readSetValid);
 +        if (!readSetValid) {
-@@ -1611,0 +1733 @@ public:
+@@ -1616,0 +1739,2 @@ public:
++
 +        MULTIVERSE_LINCHECK_TX_COMMIT_ATTEMPT();
-@@ -1632,0 +1755 @@ public:
+@@ -1632,0 +1757,2 @@ public:
 +        MULTIVERSE_LINCHECK_TX_COMMIT_SUCCESS(commitTS);
-@@ -1660,0 +1784,2 @@ public:
++        unannounceThreadTmMode(myd->tid);
+@@ -1660,0 +1787,2 @@ public:
 +        const uint64_t lincheckLogicalTransactionId =
 +            lincheckNextLogicalTransactionId.fetch_add(1, std::memory_order_relaxed);
-@@ -1662 +1787,3 @@ public:
+@@ -1662 +1790,3 @@ public:
 -        setjmp(myd->env);
 +        if (setjmp(myd->env) != 0) {
 +            MULTIVERSE_LINCHECK_TX_RETRY("abort", static_cast<int>(myd->attempt + 1));
 +        }
-@@ -1665,0 +1793,4 @@ public:
+@@ -1665,0 +1796,4 @@ public:
 +        MULTIVERSE_LINCHECK_TX_ATTEMPT_METADATA(
 +            lincheckLogicalTransactionId,
 +            static_cast<int>(myd->attempt)
 +        );
-@@ -1732,0 +1864 @@ struct tx_field {
+@@ -1732,0 +1867 @@ struct tx_field {
 +    mutable std::atomic<bool> lincheckLocationInitialized {false};
-@@ -1737,2 +1869,11 @@ struct tx_field {
+@@ -1737,2 +1872,11 @@ struct tx_field {
 -    tx_field(T initVal) {
 -        store(initVal);
 +    tx_field(T initVal) : data(initVal) {
@@ -175,115 +178,117 @@ index 62dba0e..80a7a71 100644
 +            MULTIVERSE_LINCHECK_TX_FIELD_LOCATION_REGISTER(this, addr, "tx_field", "tx_field");
 +            MULTIVERSE_LINCHECK_TX_FIELD_LOCATION_INIT(this, addr, value);
 +        }
-@@ -1741,0 +1883 @@ struct tx_field {
+@@ -1741,0 +1886 @@ struct tx_field {
 +        MULTIVERSE_LINCHECK_TX_FIELD_LOCATION_DESTROY(this, (void*)(&data));
-@@ -1817 +1959 @@ struct tx_field {
+@@ -1817 +1962 @@ struct tx_field {
 -    tx_field<T>(const tx_field<T>& other) { store(other.load()); }
 +    tx_field(const tx_field<T>& other) { store(other.load()); }
-@@ -1848,0 +1991 @@ struct tx_field {
+@@ -1848,0 +1994 @@ struct tx_field {
 +        MULTIVERSE_LINCHECK_SWITCH_POINT("multiverse.try_version_addr.before_lock");
-@@ -1850,0 +1994 @@ struct tx_field {
+@@ -1850,0 +1997 @@ struct tx_field {
 +            MULTIVERSE_LINCHECK_SPIN_SWITCH_POINT("multiverse.try_version_addr.lock_retry");
-@@ -1852,0 +1997 @@ struct tx_field {
+@@ -1852,0 +2000 @@ struct tx_field {
 +        MULTIVERSE_LINCHECK_SWITCH_POINT("multiverse.try_version_addr.after_lock");
-@@ -1858,0 +2004 @@ struct tx_field {
+@@ -1858,0 +2007 @@ struct tx_field {
 +        MULTIVERSE_LINCHECK_SWITCH_POINT("multiverse.try_version_addr.before_data_read");
-@@ -1859,0 +2006 @@ struct tx_field {
+@@ -1859,0 +2009 @@ struct tx_field {
 +        MULTIVERSE_LINCHECK_SWITCH_POINT("multiverse.try_version_addr.after_data_read");
-@@ -1889,0 +2037 @@ struct tx_field {
+@@ -1889,0 +2040 @@ struct tx_field {
 +            MULTIVERSE_LINCHECK_SWITCH_POINT("multiverse.try_version_addr.after_vlist_publish");
-@@ -1905,0 +2054 @@ struct tx_field {
+@@ -1905,0 +2057 @@ struct tx_field {
 +            MULTIVERSE_LINCHECK_SWITCH_POINT("multiverse.try_version_addr.before_unlock");
-@@ -1906,0 +2056 @@ struct tx_field {
+@@ -1906,0 +2059 @@ struct tx_field {
 +            MULTIVERSE_LINCHECK_SWITCH_POINT("multiverse.try_version_addr.after_unlock");
-@@ -1985,0 +2136 @@ struct tx_field {
+@@ -1985,0 +2139 @@ struct tx_field {
 +            MULTIVERSE_LINCHECK_SWITCH_POINT("multiverse.default_snapshot.before_bloom_lookup");
-@@ -1989,0 +2141 @@ struct tx_field {
+@@ -1989,0 +2144 @@ struct tx_field {
 +                MULTIVERSE_LINCHECK_SWITCH_POINT("multiverse.default_snapshot.before_vlist_lookup");
-@@ -1990,0 +2143 @@ struct tx_field {
+@@ -1990,0 +2146 @@ struct tx_field {
 +                MULTIVERSE_LINCHECK_SWITCH_POINT("multiverse.default_snapshot.after_vlist_lookup");
-@@ -1999,0 +2153 @@ struct tx_field {
+@@ -1999,0 +2156 @@ struct tx_field {
 +                MULTIVERSE_LINCHECK_SWITCH_POINT("multiverse.default_snapshot.before_try_version_addr");
-@@ -2000,0 +2155 @@ struct tx_field {
+@@ -2000,0 +2158 @@ struct tx_field {
 +                    MULTIVERSE_LINCHECK_SWITCH_POINT("multiverse.default_snapshot.after_try_version_addr_success");
-@@ -2003,0 +2159 @@ struct tx_field {
+@@ -2003,0 +2162 @@ struct tx_field {
 +                    MULTIVERSE_LINCHECK_SWITCH_POINT("multiverse.default_snapshot.after_try_version_addr_retry");
-@@ -2007,0 +2164 @@ struct tx_field {
+@@ -2007,0 +2167 @@ struct tx_field {
 +                MULTIVERSE_LINCHECK_SWITCH_POINT("multiverse.default_snapshot.before_traverse_vlist");
-@@ -2008,0 +2166 @@ struct tx_field {
+@@ -2008,0 +2169 @@ struct tx_field {
 +                MULTIVERSE_LINCHECK_SWITCH_POINT("multiverse.default_snapshot.after_traverse_vlist");
-@@ -2013,0 +2172 @@ struct tx_field {
+@@ -2013,0 +2175 @@ struct tx_field {
 +                MULTIVERSE_LINCHECK_SWITCH_POINT("multiverse.default_snapshot.after_vlist_value_read");
-@@ -2026,0 +2186 @@ struct tx_field {
+@@ -2026,0 +2189 @@ struct tx_field {
 +            MULTIVERSE_LINCHECK_SWITCH_POINT("multiverse.mode2_snapshot.before_vlist_head");
-@@ -2031,0 +2192 @@ struct tx_field {
+@@ -2031,0 +2195 @@ struct tx_field {
 +                MULTIVERSE_LINCHECK_SWITCH_POINT("multiverse.mode2_snapshot.before_bloom_lookup");
-@@ -2033,0 +2195 @@ struct tx_field {
+@@ -2033,0 +2198 @@ struct tx_field {
 +                    MULTIVERSE_LINCHECK_SWITCH_POINT("multiverse.mode2_snapshot.before_vlist_lookup");
-@@ -2034,0 +2197 @@ struct tx_field {
+@@ -2034,0 +2200 @@ struct tx_field {
 +                    MULTIVERSE_LINCHECK_SWITCH_POINT("multiverse.mode2_snapshot.after_vlist_lookup");
-@@ -2043,0 +2207 @@ struct tx_field {
+@@ -2043,0 +2210 @@ struct tx_field {
 +                MULTIVERSE_LINCHECK_SWITCH_POINT("multiverse.mode2_snapshot.before_data_read");
-@@ -2044,0 +2209 @@ struct tx_field {
+@@ -2044,0 +2212 @@ struct tx_field {
 +                MULTIVERSE_LINCHECK_SWITCH_POINT("multiverse.mode2_snapshot.after_data_read");
-@@ -2045,0 +2211 @@ struct tx_field {
+@@ -2045,0 +2214 @@ struct tx_field {
 +                MULTIVERSE_LINCHECK_SWITCH_POINT("multiverse.mode2_snapshot.after_lock_read");
-@@ -2112,0 +2279 @@ struct tx_field {
+@@ -2112,0 +2282 @@ struct tx_field {
 +                MULTIVERSE_LINCHECK_SWITCH_POINT("multiverse.mode2_snapshot.before_traverse_vlist");
-@@ -2113,0 +2281 @@ struct tx_field {
+@@ -2113,0 +2284 @@ struct tx_field {
 +                MULTIVERSE_LINCHECK_SWITCH_POINT("multiverse.mode2_snapshot.after_traverse_vlist");
-@@ -2118,0 +2287 @@ struct tx_field {
+@@ -2118,0 +2290 @@ struct tx_field {
 +                MULTIVERSE_LINCHECK_SWITCH_POINT("multiverse.mode2_snapshot.after_vlist_value_read");
-@@ -2146,0 +2316 @@ struct tx_field {
+@@ -2146,0 +2319 @@ struct tx_field {
 +        MULTIVERSE_LINCHECK_SWITCH_POINT("multiverse.tx_field.try_versioned_store.after_data_write");
-@@ -2148,0 +2319 @@ struct tx_field {
+@@ -2148,0 +2322 @@ struct tx_field {
 +        MULTIVERSE_LINCHECK_SWITCH_POINT("multiverse.tx_field.try_versioned_store.after_vlist_update");
-@@ -2174,0 +2346 @@ struct tx_field {
+@@ -2174,0 +2349 @@ struct tx_field {
 +            MULTIVERSE_LINCHECK_SWITCH_POINT("multiverse.tx_field.snapshot_isolation_store.after_data_write");
-@@ -2185,0 +2358 @@ struct tx_field {
+@@ -2185,0 +2361 @@ struct tx_field {
 +        MULTIVERSE_LINCHECK_SWITCH_POINT("multiverse.tx_field.snapshot_isolation_store.after_versioned_data_write");
-@@ -2187,0 +2361 @@ struct tx_field {
+@@ -2187,0 +2364 @@ struct tx_field {
 +        MULTIVERSE_LINCHECK_SWITCH_POINT("multiverse.tx_field.snapshot_isolation_store.after_vlist_update");
-@@ -2237,0 +2412 @@ struct tx_field {
+@@ -2237,0 +2415 @@ struct tx_field {
 +        MULTIVERSE_LINCHECK_SWITCH_POINT("multiverse.tx_field.force_versioned_store.after_data_write");
-@@ -2239,0 +2415 @@ struct tx_field {
+@@ -2239,0 +2418 @@ struct tx_field {
 +        MULTIVERSE_LINCHECK_SWITCH_POINT("multiverse.tx_field.force_versioned_store.after_vlist_update");
-@@ -2249,0 +2426 @@ struct tx_field {
+@@ -2249,0 +2429 @@ struct tx_field {
 +            lincheckRegisterLocation(newVal);
-@@ -2256,0 +2434 @@ struct tx_field {
+@@ -2256,0 +2437 @@ struct tx_field {
 +            lincheckRegisterLocation(newVal);
-@@ -2261,0 +2440 @@ struct tx_field {
+@@ -2261,0 +2443 @@ struct tx_field {
 +        lincheckRegisterLocation(data);
-@@ -2264,0 +2444 @@ struct tx_field {
+@@ -2264,0 +2447 @@ struct tx_field {
 +        MULTIVERSE_LINCHECK_TX_FIELD_WRITE_VALUE(this, addr, newVal, tableIndex);
-@@ -2276,0 +2457 @@ struct tx_field {
+@@ -2276,0 +2460 @@ struct tx_field {
 +                MULTIVERSE_LINCHECK_SPIN_SWITCH_POINT("multiverse.tx_field.store.wait_versioning");
-@@ -2284,0 +2466 @@ struct tx_field {
+@@ -2284,0 +2469 @@ struct tx_field {
 +        MULTIVERSE_LINCHECK_TX_LOCK_ATTEMPT(tableIndex);
-@@ -2285,0 +2468 @@ struct tx_field {
+@@ -2285,0 +2471 @@ struct tx_field {
 +            MULTIVERSE_LINCHECK_TX_LOCK_FAILED(tableIndex);
-@@ -2287,0 +2471 @@ struct tx_field {
+@@ -2287,0 +2474 @@ struct tx_field {
 +        MULTIVERSE_LINCHECK_TX_LOCK_ACQUIRED(tableIndex);
-@@ -2303,0 +2488 @@ struct tx_field {
+@@ -2303,0 +2491 @@ struct tx_field {
 +        MULTIVERSE_LINCHECK_SWITCH_POINT("multiverse.tx_field.store.after_data_write");
-@@ -2341 +2526,4 @@ struct tx_field {
+@@ -2341 +2529,4 @@ struct tx_field {
 -
 +        void* addr = (void*)(&data);
 +        lincheckRegisterLocation(data);
 +        uint64_t tableIndex = hidx((size_t)addr);
 +        T observed;
-@@ -2343 +2531 @@ struct tx_field {
+@@ -2343 +2534 @@ struct tx_field {
 -            return snapshotLoad();
 +            observed = snapshotLoad();
-@@ -2346 +2534 @@ struct tx_field {
+@@ -2346 +2537 @@ struct tx_field {
 -            return load_tl2();
 +            observed = load_tl2();
-@@ -2347,0 +2536,2 @@ struct tx_field {
+@@ -2347,0 +2539,2 @@ struct tx_field {
 +        MULTIVERSE_LINCHECK_TX_FIELD_READ_VALUE(this, addr, observed, tableIndex, myd->rClock);
 +        return observed;
-@@ -2402,0 +2593 @@ void thread_registry_deregister_thread() {
+@@ -2402,0 +2596 @@ void thread_registry_deregister_thread() {
 +    MULTIVERSE_LINCHECK_TX_ABORT("abortTx");
-@@ -2461 +2652 @@ void thread_registry_deregister_thread() {
+@@ -2427,0 +2622 @@ void thread_registry_deregister_thread() {
++    unannounceThreadTmMode(myd->tid);
+@@ -2461 +2656 @@ void thread_registry_deregister_thread() {
 -}
 \ No newline at end of file
 +}

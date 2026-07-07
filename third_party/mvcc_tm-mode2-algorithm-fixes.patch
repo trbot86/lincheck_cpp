@@ -1,0 +1,118 @@
+diff --git a/multiverse/multiverse.hpp b/multiverse/multiverse.hpp
+index 0f537e9..53754fe 100644
+--- a/multiverse/multiverse.hpp
++++ b/multiverse/multiverse.hpp
+@@ -1294,7 +1294,11 @@ static void bgThreadUnversioner() {
+ 
+             //transition to mode 2
+             tmModeCounter = transitionTmMode(tid, tmModeCounter, TM_MODE_MODE2);
++            #ifndef USE_RDTSC
+             uint64_t currGTimestamp = globals.gClock.load();
++            #else
++            uint64_t currGTimestamp = rdtsc_get_read_ts();
++            #endif
+             globals.gFirstObservedMode2Timestamp.store(currGTimestamp, std::memory_order_release);
+             DEBUG_PRINT_TM("mode_switch_to_mode2\n");
+ 
+@@ -1724,6 +1728,12 @@ public:
+             return true;
+         }
+ 
++        #ifndef USE_RDTSC
++        uint64_t commitTS = globals.gClock.load();
++        #else
++        uint64_t commitTS = rdtsc_get_read_ts();
++        #endif
++
+         MULTIVERSE_LINCHECK_TX_VALIDATE_BEGIN();
+         const bool readSetValid = myd->readSet.validate(myd->rClock, tid);
+         MULTIVERSE_LINCHECK_TX_VALIDATE_END(readSetValid);
+@@ -1731,12 +1741,6 @@ public:
+             abortTx(myd);
+         }
+ 
+-        #ifndef USE_RDTSC
+-        uint64_t commitTS = globals.gClock.load();
+-        #else
+-        uint64_t commitTS = rdtsc_get_read_ts();
+-        #endif
+-
+         MULTIVERSE_LINCHECK_TX_COMMIT_ATTEMPT();
+         myd->snapshotWriteSet.removeTBDs(tid, commitTS);
+         myd->writeSet.unlock(commitTS, tid);
+@@ -2090,7 +2094,7 @@ struct tx_field {
+         }
+ 
+         bool traversedPastHead = false;
+-        while (vNode && (getUnmarkedTimestamp(markedTs) >= myd->rClock || markedTs == EMPTY_SNAPSHOT_TIMESTAMP)) {
++        while (vNode && (getUnmarkedTimestamp(markedTs) > myd->rClock || markedTs == EMPTY_SNAPSHOT_TIMESTAMP)) {
+             vNode = vNode->next;
+             if (!vNode) {
+                 break;
+@@ -2099,6 +2103,10 @@ struct tx_field {
+             traversedPastHead = true;
+         }
+ 
++        if (vNode && getUnmarkedTimestamp(markedTs) == myd->rClock) {
++            abortTx(myd);
++        }
++
+         if (traversedPastHead) {
+             myd->numSnapReadsPastHead++;
+         }
+@@ -2215,29 +2223,7 @@ struct tx_field {
+                 if (isLocked(sl)) {
+                     //addr is locked
+                     if (didRetry) {
+-                        //There are only 2 ways in which we could find a locked addr that is unversioned
+-                        //  (1) The addr is locked by a writer that is about to version it
+-                        //  (2) Lock table collision - Some other addr that maps to the same lock is being written
+-                        //      In either case if we do 2 tries at reading this addr's vlist and lock and we find either
+-                        //      (a) a change in the lock + unversioned or
+-                        //      (b) no changes + unversioned or
+-                        //      (c) versioned (obvious)
+-                        //      Then we can return the last value read, since for (a) and (b) any writes would have versioned the addr
+-                        if (sl != lastSL) {
+-                            return lastVal;
+-                        }
+-                        else if (sl == lastSL && val == lastVal) {
+-                            uint64_t firstMode2Ts = globals.gFirstObservedMode2Timestamp.load(std::memory_order_acquire);
+-                            if (getTS(sl) < myd->rClock || (firstMode2Ts != INVALID_FIRST_OBS_MODE2_TS && firstMode2Ts < myd->rClock)) {
+-                                return lastVal;
+-                            }
+-                            else {
+-                                abortTx(myd);
+-                            }
+-                        }
+-                        else {
+-                            abortTx(myd);
+-                        }
++                        abortTx(myd);
+                     }
+                     else {
+                         lastSL = sl;
+@@ -2249,23 +2235,7 @@ struct tx_field {
+                 else {
+                     //addr is unlocked
+                     if (didRetry) {
+-                        // 3 ways addr can be unlocked and unversioned after a retry
+-                        //   (1) addr was locked then unlocked --> unversioned means this was due to a lock table collision or it would now be versioned
+-                        //   (2) addr was unlocked, locked then unlocked --> same as above
+-                        //   (3) addr was unlocked the entire time
+-                        //      in (1) and (2) the lock version on 2nd read will have changed
+-                        if (sl != lastSL) {
+-                            return lastVal;
+-                        }
+-                        else {
+-                            uint64_t firstMode2Ts = globals.gFirstObservedMode2Timestamp.load(std::memory_order_acquire);
+-                            if (getTS(sl) < myd->rClock || (firstMode2Ts != INVALID_FIRST_OBS_MODE2_TS && firstMode2Ts < myd->rClock)) {
+-                                return lastVal;
+-                            }
+-                            else {
+-                                abortTx(myd);
+-                            }
+-                        }
++                        abortTx(myd);
+                     }
+                     else {
+                         uint64_t firstMode2Ts = globals.gFirstObservedMode2Timestamp.load(std::memory_order_acquire);

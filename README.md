@@ -109,6 +109,13 @@ auto replayed = lincheck::ModelCheckingOptions()
     .replay(spec, result.scenario, result.schedule);
 ```
 
+Use `replay(...)` when the schedule must be consumed exactly. Use `check_schedule_prefix(...)` when a discovered prefix should be driven first, but corrected code may legitimately need extra scheduler choices to drain, retry, or finish:
+
+```cpp
+auto checked = lincheck::ModelCheckingOptions()
+    .check_schedule_prefix(spec, result.scenario, result.schedule);
+```
+
 ## Model-Checking Coverage
 
 Model checking is bounded exhaustive over the cooperative scheduling choices it observes. It is not an exhaustive permutation of all native thread interleavings or all instruction-level events.
@@ -447,6 +454,20 @@ bash tools/check_multiverse_patch.sh
 
 Pass alternate paths as `bash tools/check_multiverse_patch.sh <mvcc_dir> <patch_file>`.
 
+The repository also keeps an optional Multiverse Mode2 algorithm patch separate from the hook patch:
+
+```bash
+third_party/mvcc_tm-mode2-algorithm-fixes.patch
+```
+
+The normal local checkout is expected to be hook-patched but still algorithmically broken, so Lincheck can demonstrate the bug. To run the full before/after routine:
+
+```bash
+bash tools/check_multiverse_mode2_algorithm_fix.sh
+```
+
+That script builds the broken hooked checkout, runs the model checker until it finds the direct-forced Mode2 snapshot/updater counterexample, saves the discovered schedule, applies `mvcc_tm-mode2-algorithm-fixes.patch`, rebuilds, checks the discovered schedule prefix against the fixed checkout, and reverses the algorithm patch before exiting. The manual detector tests are skipped by default in `./build/multiverse_smoke_tests`; run them through the script unless you are deliberately debugging the patch.
+
 To bind hooks in code, include the Lincheck binding before Multiverse:
 
 ```cpp
@@ -456,13 +477,13 @@ To bind hooks in code, include the Lincheck binding before Multiverse:
 
 The hook macros are no-ops unless the binding header is included first. The local patch emits value-bearing `tx_field` read/write hooks, lazy location initialization for fields first observed under a Lincheck runtime, location destroy events, logical transaction attempt metadata, and a narrow spin-loop scheduling hook for Multiverse versioning waits. It also fixes a Multiverse background-thread double-deregister teardown bug that ASan exposed while running the smoke tests. The spin-loop hook exists so the model checker can resume a paused writer instead of reporting a synthetic spin behind that writer's lock; it is not a transparent scheduler for every atomic read/write inside Multiverse. Detailed internal Multiverse switch-point labels remain inert unless an adapter deliberately binds them for a local experiment.
 
-The binding maps each Multiverse `tx_field<T>` to a self-owned handle-based location using the field object pointer as the allocation token and the contained value address as the raw field address. Opacity histories therefore retain object-lifetime IDs, generations, field ID `self`, and raw addresses for Multiverse fields where practical. Paths that cannot expose a stable `tx_field<T>` token continue to use the raw-address fallback; under the default value-history policy this is still usable for ordinary opacity checking, while strict lifetime mode needs stable handles or quiescent raw lifetimes. With `check_opacity()`, Lincheck checks the retained Multiverse transaction history for the bounded opacity property above. Without `check_opacity()`, it verifies only public ADT linearizability. The current adapter smoke tests cover normal read transactions, direct `TX_IS_SNAPSHOT` calls where Multiverse exposes that transaction type, bounded concurrent updater/read mixes, retry-heavy updater scenarios, and detector-style snapshot/updater cases. One forced-mode2 model-check detector intentionally uses a test-only mode switch to reproduce a known Multiverse snapshot/updater violation; keep that kind of mode forcing in adapter/application tests, not in core Lincheck behavior. Keep Multiverse-specific bindings in adapter/test code; the core verifier should continue to depend only on generic `lincheck::stm` events.
+The binding maps each Multiverse `tx_field<T>` to a self-owned handle-based location using the field object pointer as the allocation token and the contained value address as the raw field address. Opacity histories therefore retain object-lifetime IDs, generations, field ID `self`, and raw addresses for Multiverse fields where practical. Paths that cannot expose a stable `tx_field<T>` token continue to use the raw-address fallback; under the default value-history policy this is still usable for ordinary opacity checking, while strict lifetime mode needs stable handles or quiescent raw lifetimes. With `check_opacity()`, Lincheck checks the retained Multiverse transaction history for the bounded opacity property above. Without `check_opacity()`, it verifies only public ADT linearizability. The current adapter smoke tests cover normal read transactions, direct `TX_IS_SNAPSHOT` calls where Multiverse exposes that transaction type, bounded concurrent updater/read mixes, retry-heavy updater scenarios, snapshot/updater cases, and a manual direct-forced Mode2 detector for the known snapshot/updater bug. The default Mode2 smoke enters Mode2 through Multiverse's transition protocol in scenario setup instead of directly switching modes in the middle of an updater; the manual detector intentionally uses a test-only direct mode switch to reproduce the bug under the model checker. Keep this kind of mode control in adapter/application tests, not in core Lincheck behavior. Keep Multiverse-specific bindings in adapter/test code; the core verifier should continue to depend only on generic `lincheck::stm` events.
 
 The `multiverse_smoke_tests` CMake target defines `DISABLE_UNVERSIONING=1`. This is deliberate: the smoke suite is checking transaction value histories and public ADT results, not Multiverse's background version reclamation. The rest of the Multiverse examples are left with their normal compile definitions.
 
 High-contention STM workloads can abort and retry heavily. Dense shared-array slot overlap, high `k`, high thread counts, or large iteration counts can look like deadlock or livelock because the STM keeps retrying. Even apparently disjoint array slots can collide in a word-based TM's lock table. Keep smoke-test domains small, estimate expected overlap before increasing parameters, and pair contention-oriented adapter tests with explicit runtime and opacity-search bounds.
 
-The shared-array snapshot/updater smoke uses a constant-total invariant: updater transactions transfer value between slots while a snapshot reader sums the whole array. The direct `TX_IS_SNAPSHOT` model-check variant verifies the hook/opacity path with a 12-slot passing scenario and zero context switches. The forced-mode2 model-check detector uses an 8-slot array and preempts a transfer after the decrement side but before the increment side; Lincheck reports a combined invalid-result/opacity violation when the snapshot returns `7999` instead of the required `8000`. The bounded direct-snapshot stress variant uses a larger array with a retry-safe snapshot accumulator and is expected to pass; a 100k-slot version is too large for the default suite and should be treated as an opt-in benchmark shape.
+The shared-array snapshot/updater smoke uses a constant-total invariant: updater transactions transfer value between slots while a snapshot reader sums the whole array. The direct `TX_IS_SNAPSHOT` model-check variant verifies the hook/opacity path with a 12-slot passing scenario and zero context switches. The protocol Mode2 model-check variant uses a smaller setup: enter Mode2 in scenario init, run a 4-slot transfer/snapshot pair with zero context switches, and release Mode2 in post. The manual direct-forced Mode2 detector uses an 8-slot array and a model-checked updater/snapshot pair; on the broken checkout Lincheck reports a combined invalid-result/opacity violation, then `tools/check_multiverse_mode2_algorithm_fix.sh` applies the optional patch and verifies the discovered schedule prefix no longer produces the bug. The larger Mode2 and direct-snapshot stress variants use retry-safe snapshot accumulators and are expected to pass; a 100k-slot version is too large for the default suite and should be treated as an opt-in benchmark shape.
 
 ## Important Limits
 

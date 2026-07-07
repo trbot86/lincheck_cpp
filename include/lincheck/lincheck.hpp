@@ -15196,6 +15196,33 @@ public:
         return result;
     }
 
+    CheckResult check_schedule_prefix(
+        const TestSpec& spec,
+        const ExecutionScenario& scenario,
+        const std::vector<int>& schedule
+    ) const {
+        detail::validate_replay_schedule(scenario, schedule);
+        detail::validate_scenario_against_spec(spec, scenario);
+        LinearizabilityVerifier verifier(spec);
+        auto result = finish_schedule_verification(verifier, scenario, run_schedule(spec, scenario, schedule, false));
+        result.stats.scenarios_generated = 1;
+        result.stats.schedules_generated = 1;
+        result.stats.schedules_explored = 1;
+        if (!result.success) detail::append_model_checking_stats_section(result);
+        return result;
+    }
+
+    CheckResult check_schedule_prefix(
+        std::string name,
+        const TestSpec& spec,
+        const ExecutionScenario& scenario,
+        const std::vector<int>& schedule
+    ) const {
+        auto result = check_schedule_prefix(spec, scenario, schedule);
+        detail::annotate_named_check(result, name);
+        return result;
+    }
+
     CheckResult check(std::string name, const TestSpec& spec, const ExecutionScenario& scenario) const {
         auto result = check(spec, scenario);
         detail::annotate_named_check(result, name);

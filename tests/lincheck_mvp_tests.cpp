@@ -1206,6 +1206,14 @@ void model_checker_replay_rejects_non_runnable_thread_choices() {
         .replay(spec, scenario, std::vector<int>{1, 0});
     require(valid_replay.success, "replay probe should accept the exact runnable schedule");
 
+    const auto prefix_check = lincheck::ModelCheckingOptions()
+        .max_schedule_length(2)
+        .check_schedule_prefix("replay-probe-prefix", spec, scenario, std::vector<int>{1, 0, 0, 0});
+    require(prefix_check.success, "schedule-prefix probe should allow unused trailing choices");
+    require(prefix_check.test_name == "replay-probe-prefix", "named schedule-prefix check should record the test name");
+    require(prefix_check.stats.schedules_generated == 1, "schedule-prefix check should report one generated schedule");
+    require(prefix_check.stats.schedules_explored == 1, "schedule-prefix check should report one explored schedule");
+
     require_invalid_argument(
         [&] {
             lincheck::ModelCheckingOptions()

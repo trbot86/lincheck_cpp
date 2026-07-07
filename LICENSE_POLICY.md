@@ -20,6 +20,8 @@ The local Multiverse hook instrumentation is preserved as `third_party/mvcc_tm-l
 
 The patch is an integration shim for private testing. It adds no-op hook macros by default and call sites that bind to Lincheck only when `include/lincheck/multiverse_hooks.hpp` is included first.
 
+`third_party/mvcc_tm-mode2-algorithm-fixes.patch` is intentionally separate from the hook instrumentation. It is an optional local algorithm patch used by `tools/check_multiverse_mode2_algorithm_fix.sh` to demonstrate that the model checker finds the broken Mode2 snapshot/updater behavior before the patch and no longer sees that bug after the patch is applied.
+
 ## Dependencies
 
 - The C++ port itself is header-only and uses the C++20 standard library.
