@@ -38,6 +38,7 @@ if (LINCHECK_BUILD_MULTIVERSE_TESTS AND EXISTS "${LINCHECK_MULTIVERSE_ROOT}/mult
     target_compile_definitions(multiverse_smoke_tests PRIVATE
         MAX_THREADS_POW2=64
         CPU_FREQ_GHZ=3.0
+        DISABLE_UNVERSIONING=1
     )
     target_compile_options(multiverse_smoke_tests PRIVATE
         -Wall

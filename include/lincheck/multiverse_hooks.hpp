@@ -141,3 +141,11 @@ inline void tx_field_write_value(
 
 #define MULTIVERSE_LINCHECK_TX_ATTEMPT_METADATA(logical_transaction_id, attempt) \
     ::lincheck::stm::tx_attempt_metadata((logical_transaction_id), (attempt))
+
+#ifndef MULTIVERSE_LINCHECK_SWITCH_POINT
+#define MULTIVERSE_LINCHECK_SWITCH_POINT(label) do { (void)(label); } while (false)
+#endif
+
+#ifndef MULTIVERSE_LINCHECK_SPIN_SWITCH_POINT
+#define MULTIVERSE_LINCHECK_SPIN_SWITCH_POINT(label) ::lincheck::switch_point((label))
+#endif
